@@ -1,4 +1,7 @@
-﻿const {Pool} = require('pg');
+﻿import pg from 'pg'
+import crypto from "crypto";
+
+const {Pool} = pg;
 
 const pool = new Pool({
     user: 'nice',
@@ -7,6 +10,19 @@ const pool = new Pool({
     password: 'nice',
     port: 5432,
 });
+
+async function getChatParticipants(chatId) {
+    try {
+        const query = await pool.query(`SELECT user_id
+                                        FROM chat_member
+                                        WHERE chat_id = $1`, [chatId])
+
+        return query.rows;
+
+    } catch (e) {
+
+    }
+}
 
 async function getMessageById(messageId) {
     const query = `SELECT *
@@ -49,7 +65,7 @@ async function createPrivateChat(userId1, userId2) {
         await client.query('BEGIN');
 
         const chatResult = await client.query(
-            `INSERT INTO chat (chat_name, is_ls)
+            `INSERT INTO chats (chat_name, is_ls)
              VALUES ('', true) RETURNING chat_id`
         );
         const chatId = chatResult.rows[0].chat_id;
@@ -77,7 +93,7 @@ async function createGroupChat(creatorId, chatName, initialMembers = []) {
         await client.query('BEGIN');
 
         const chatResult = await client.query(
-            `INSERT INTO chat (chat_name, is_ls)
+            `INSERT INTO chats (chat_name, is_ls)
              VALUES ($1, false) RETURNING chat_id`,
             [chatName]
         );
@@ -111,15 +127,17 @@ async function createGroupChat(creatorId, chatName, initialMembers = []) {
 async function getOrCreateInvitationLink(chatId, creatorId) {
 
     const queryGet = await pool.query(`
-        SELECT link FROM chat_invite_link
-        WHERE chat_id = $1 and user_id = $2
+        SELECT link
+        FROM chat_invite_link
+        WHERE chat_id = $1
+          and user_id = $2
     `, [chatId, creatorId]);
 
-    if (queryGet.rows) {
+    if (queryGet.rows[0]) {
         return queryGet.rows[0].link;
     }
 
-    let link = "abracadarba";
+    let link = crypto.randomBytes(64).toString('hex');
 
     const query = `
         INSERT INTO chat_invite_link (chat_id, user_id, link)
@@ -132,14 +150,17 @@ async function getOrCreateInvitationLink(chatId, creatorId) {
 async function leaveChat(userId, chatId) {
     const client = await pool.connect();
     try {
-         await client.query('BEGIN');
+        await client.query('BEGIN');
 
-         const leaveResult = await client.query(
-             `DELETE FROM chat_member WHERE user_id = $1 and chat_id = $2 RETURNING *`, [userId, chatId]
-         )
+        const leaveResult = await client.query(
+            `DELETE
+             FROM chat_member
+             WHERE user_id = $1
+               and chat_id = $2 RETURNING *`, [userId, chatId]
+        )
 
-         await client.query('COMMIT');
-         return !!leaveResult.rows[0]
+        await client.query('COMMIT');
+        return !!leaveResult.rows[0]
     } catch (err) {
         await client.query('ROLLBACK');
         throw err;
@@ -148,6 +169,40 @@ async function leaveChat(userId, chatId) {
     }
 
 }
+
+async function kickFromChat(userId, chatId) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const leaveResult = await client.query(
+            `UPDATE chat_member
+             SET is_kicked = true
+             WHERE user_id = $1
+               and chat_id = $2 RETURNING *`, [userId, chatId]
+        )
+
+        await client.query('COMMIT');
+        return !!leaveResult.rows[0]
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
+
+}
+
+async function getChatIdByInviteLink(link) {
+     const query = `
+        SELECT chat_id FROM chat_invite_link WHERE link = $1
+        `
+    const result = await pool.query(query, [link]);
+    if (result.rows[0]) return result.rows[0].chat_id;
+    return undefined;
+}
+
+
 
 async function joinChatByInviteLink(userId, link) {
     const client = await pool.connect();
@@ -190,7 +245,7 @@ async function deleteGroupChat(chatId) {
 
         const result = await client.query(
             `DELETE
-             FROM chat
+             FROM chats
              WHERE chat_id = $1
                AND is_ls = false RETURNING *`,
             [chatId]
@@ -212,10 +267,8 @@ async function updateGroupChat(chatId, newChatName) {
         await client.query('BEGIN');
 
         const result = await client.query(
-            `UPDATE
-                 FROM chat
-             SET (chat_name)
-             VALUES ($2)
+            `UPDATE chats
+             SET chat_name = $2
              WHERE chat_id = $1
                AND is_ls = false RETURNING *`,
             [chatId, newChatName]
@@ -234,7 +287,7 @@ async function updateGroupChat(chatId, newChatName) {
 async function getUserProfile(userId) {
     const query = `
         SELECT u.user_id,
-               u.nickname,
+               up.nickname,
                up.description,
                up.birth_date
         FROM users u
@@ -244,7 +297,7 @@ async function getUserProfile(userId) {
     return result.rows[0];
 }
 
-async function updateUserProfile(userId, {description, birthDate}) {
+async function updateUserProfile(userId, {nickname, description, birthDate}) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -270,9 +323,9 @@ async function updateUserProfile(userId, {description, birthDate}) {
         } else {
             // Insert new
             result = await client.query(
-                `INSERT INTO user_profiles (user_id, description, birth_date)
-                 VALUES ($1, $2, $3) RETURNING *`,
-                [userId, description, birthDate]
+                `INSERT INTO user_profiles (user_id, nickname,description, birth_date)
+                 VALUES ($1, $4, $2, $3) RETURNING *`,
+                [userId, description, birthDate, nickname]
             );
         }
 
@@ -286,17 +339,35 @@ async function updateUserProfile(userId, {description, birthDate}) {
     }
 }
 
+async function getLastChatMessage(chat_id){
+    const query = `SELECT *
+                   FROM messages
+                   WHERE chat_id = $1 ORDER BY timestamp DESC LIMIT 1`;
+    const values = [chat_id];
+    const result = await pool.query(query, values);
+    return result.rows[0];
+}
+
 async function getChats(userId, filters = {}) {
     let query = `
-        SELECT c.chat_id,
-               c.chat_name,
-               c.is_ls,
-               COUNT(m.message_id) as message_count,
-               MAX(m.timestamp)    as last_message_time
-        FROM chat c
-                 JOIN chat_member cm ON c.chat_id = cm.chat_id
-                 LEFT JOIN messages m ON c.chat_id = m.chat_id
-        WHERE cm.user_id = $1`;
+        SELECT
+    c.chat_id,
+    c.chat_id,
+    c.chat_name,
+    c.is_ls,
+    c.created_time,
+    m.message_id as last_message_id,
+    m.text as last_message_text,
+    m.user_id as last_message_user_id,
+    (CASE WHEN m.timestamp IS NULL THEN c.created_time ELSE m.timestamp END) as last_message_timestamp
+FROM chats c
+         JOIN chat_member cm ON c.chat_id = cm.chat_id and cm.is_kicked = false
+         LEFT JOIN messages m ON m.message_id = (SELECT m2.message_id
+                                                 FROM messages m2
+                                                 WHERE m2.chat_id = c.chat_id
+                                                 ORDER BY m2.timestamp DESC
+                                                 LIMIT 1)
+WHERE cm.user_id = $1`;
 
     const values = [userId];
     let paramIndex = 2;
@@ -313,8 +384,9 @@ async function getChats(userId, filters = {}) {
         paramIndex++;
     }
 
-    query += ` GROUP BY c.chat_id ORDER BY last_message_time DESC NULLS LAST`;
+    query += ` ORDER BY CASE WHEN m.timestamp IS NULL THEN c.created_time ELSE m.timestamp END DESC`;
 
+    console.log(query)
     const result = await pool.query(query, values);
     return result.rows;
 }
@@ -328,17 +400,62 @@ async function getChatById(chatId) {
     return result.rows[0];
 }
 
-async function isUserChatMember(chat_id, user_id) {
+async function getChatMember(chat_id, user_id, must_be_not_kicked = true) {
+    const query = `
+        SELECT * FROM chat_member WHERE chat_id = $1 and user_id = $2 ${must_be_not_kicked ? 'and is_kicked = false' : ''}
+    `
+    const result = await pool.query(query, [chat_id, user_id]);
+    return result.rows[0];
+}
 
+async function getMessages(chat_id, last_message_id) {
+    const query = `
+        SELECT * FROM messages 
+        WHERE chat_id = $1 ${last_message_id ? 'and message_id < $2' : ''}
+        ORDER BY message_id DESC
+        LIMIT 25        
+    `
+    let values = [chat_id];
+    if (last_message_id) {
+        values.push(last_message_id)
+    }
+
+    const result = await pool.query(query, values);
+    return result.rows;
+}
+
+async function getChatMembers(chat_id){
+    const query = `
+        SELECT user_id, is_admin FROM chat_member WHERE chat_id = $1       
+    `
+
+    const result = await pool.query(query, [chat_id]);
+    return result.rows;
 }
 
 async function getUserById(user_id) {
 
 }
 
-module.exports = {
+async function getUserProfilesByIds(userIds, len){
+   let ids = "";
+    userIds.forEach((v, i) => {
+
+        ids += Number.parseInt(v).toString() + (i !== len - 1 ? ", " : "");
+    });
+
+    const query = `SELECT user_id, nickname FROM user_profiles WHERE user_id IN (${ids})`;
+
+    const result = await pool.query(query);
+    return result.rows;
+}
+
+export {
+    getChatMembers,
+    getMessages,
     getMessageById,
     getChats,
+    getUserProfilesByIds,
     createMessage,
     updateMessage,
     deleteMessage,
@@ -350,9 +467,13 @@ module.exports = {
     deleteGroupChat,
     getUserProfile,
     updateUserProfile,
-    getChatMember: isUserChatMember,
+    getChatMember,
     getChatById,
     getUserById,
-    leaveChat
+    leaveChat,
+    getChatParticipants,
+    getLastChatMessage,
+    kickFromChat,
+    getChatIdByInviteLink
 
 }
