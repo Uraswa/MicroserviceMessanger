@@ -246,8 +246,7 @@ async function deleteGroupChat(chatId) {
         const result = await client.query(
             `DELETE
              FROM chats
-             WHERE chat_id = $1
-               AND is_ls = false RETURNING *`,
+             WHERE chat_id = $1 RETURNING *`,
             [chatId]
         );
 
@@ -355,6 +354,11 @@ async function getChats(userId, filters = {}) {
     c.chat_id,
     c.chat_name,
     c.is_ls,
+    (CASE 
+        WHEN c.is_ls = true 
+            THEN (SELECT user_id FROM chat_member WHERE user_id != $1 and chat_id = c.chat_id LIMIT 1)
+            ELSE NULL END
+    ) as other_user_id,
     c.created_time,
     m.message_id as last_message_id,
     m.text as last_message_text,
@@ -400,6 +404,17 @@ async function getChatById(chatId) {
     return result.rows[0];
 }
 
+async function getChatByOtherUserId(user_id, other_user_id){
+    const query = `SELECT c.chat_id FROM chats c
+        JOIN chat_member cm1 ON (cm1.user_id = $1 and cm1.chat_id = c.chat_id)
+        JOIN chat_member cm2 ON (cm2.user_id = $2 and cm1.chat_id = c.chat_id)
+        WHERE c.is_ls = true
+        GROUP BY c.chat_id`
+    const values = [user_id, other_user_id];
+    const result = await pool.query(query, values);
+    return result.rows[0];
+}
+
 async function getChatMember(chat_id, user_id, must_be_not_kicked = true) {
     const query = `
         SELECT * FROM chat_member WHERE chat_id = $1 and user_id = $2 ${must_be_not_kicked ? 'and is_kicked = false' : ''}
@@ -424,6 +439,15 @@ async function getMessages(chat_id, last_message_id) {
     return result.rows;
 }
 
+async function clearMessages(chat_id) {
+    const query = `
+        DELETE FROM messages
+        WHERE chat_id = $1
+    `
+    let values = [chat_id];
+    await pool.query(query, values);
+}
+
 async function getChatMembers(chat_id){
     const query = `
         SELECT user_id, is_admin FROM chat_member WHERE chat_id = $1       
@@ -434,7 +458,9 @@ async function getChatMembers(chat_id){
 }
 
 async function getUserById(user_id) {
-
+    const query = `SELECT * FROM users WHERE user_id = $1`;
+    const result = await pool.query(query, [user_id]);
+    return result.rows[0];
 }
 
 async function getUserProfilesByIds(userIds, len){
@@ -450,7 +476,14 @@ async function getUserProfilesByIds(userIds, len){
     return result.rows;
 }
 
+async function getUserProfiles(profileName) {
+    const query = `SELECT user_id, nickname FROM user_profiles WHERE nickname ILIKE $1`;
+    const result = await pool.query(query, ['%' + profileName + '%']);
+    return result.rows;
+}
+
 export {
+    getUserProfiles,
     getChatMembers,
     getMessages,
     getMessageById,
@@ -474,6 +507,8 @@ export {
     getChatParticipants,
     getLastChatMessage,
     kickFromChat,
-    getChatIdByInviteLink
+    getChatIdByInviteLink,
+    getChatByOtherUserId,
+    clearMessages
 
 }

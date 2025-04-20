@@ -2,7 +2,7 @@ import {WebSocketServer} from "ws";
 import redis from "redis";
 import * as model from "./db.js"
 import axios from "axios";
-import {sendToAllChatMembers, sendToExactMember, getChatParticipants} from "./brokerConnector";
+import {sendToAllChatMembers, sendToExactMember, getChatParticipants} from "./brokerConnector.js";
 
 
 const redisSubscriber = redis.createClient();
@@ -209,8 +209,8 @@ class WebsocketController {
     }
 
     async createChat(ws, user_id, msg) {
-        let {chat_name, is_ls, other_user_id} = msg.data;
-        if (is_ls) {
+        let {chat_name, is_ls, other_user_id, text} = msg.data;
+        if (other_user_id) {
             let otherUser = await model.getUserById(other_user_id);
 
             if (!otherUser) {
@@ -218,15 +218,40 @@ class WebsocketController {
                 return;
             }
 
+            if (await model.getChatByOtherUserId(user_id, other_user_id)){
+                this.send(websocketResponseDTO(msg, false, {}, "Chat_already_exists"));
+                return;
+            }
+
             let privateChatRes = await model.createPrivateChat(user_id, other_user_id)
             if (privateChatRes) {
+
+                let userProfileResp = await axios.get(`http://localhost:8001/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id, other_user_id]))}`)
+
+                let nickname1 = "";
+                let nickname2 = "";
+
+                if (userProfileResp.status === 200 && userProfileResp.data.data.profiles.length === 2) {
+                    let prof1 = userProfileResp.data.data.profiles[0];
+                    let prof2 = userProfileResp.data.data.profiles[1];
+
+                    if (prof1.user_id === user_id) nickname1 = prof1.nickname;
+                    else if (prof1.user_id === other_user_id) nickname2 = prof1.nickname;
+
+
+                    if (prof2.user_id === user_id) nickname1 = prof2.nickname;
+                    else if (prof2.user_id === other_user_id) nickname2 = prof2.nickname;
+                }
+
                 let promise1 = sendToExactMember({
                     type: "createChat",
                     success: true,
                     data: {
                         chat_id: privateChatRes.chat_id,
+                        other_user_id: user_id,
+                        sender_id: other_user_id,
                         is_ls: true,
-                        chat_name: `Чат с ${user_id}`
+                        chat_name: `Чат с ${nickname1}`
                     }
                 }, other_user_id);
                 let promise2 = sendToExactMember({
@@ -234,13 +259,24 @@ class WebsocketController {
                     success: true,
                     data: {
                         chat_id: privateChatRes.chat_id,
+                        other_user_id: other_user_id,
+                        sender_id: user_id,
                         is_ls: true,
-                        chat_name: `Чат с ${other_user_id}`
+                        chat_name: `Чат с ${nickname2}`
                     }
                 }, user_id);
 
+
                 await promise1;
                 await promise2;
+
+                await this.route(ws, user_id, {
+                    type: "sendMessage",
+                    data: {
+                        chat_id:  privateChatRes.chat_id,
+                        text: text
+                    }
+                })
 
 
             } else {
@@ -269,6 +305,7 @@ class WebsocketController {
         }
 
     }
+
 
     async updateChat(ws, user_id, msg) {
         let newchat_name = msg.data.chat_name;
@@ -306,6 +343,12 @@ class WebsocketController {
     }
 
     async deleteChat(ws, user_id, msg) {
+
+        if (!msg.chat.is_ls && !msg.member.is_admin) {
+            this.send(websocketResponseDTO(msg, false, {}, "Permission_denied"))
+                return;
+        }
+
         let chatParticipants = await getChatParticipants(msg.chat.chat_id);
         let result = await model.deleteGroupChat(msg.chat.chat_id, user_id);
         if (result) {
@@ -320,6 +363,21 @@ class WebsocketController {
         }
 
         ws.send(JSON.stringify({type: "deleteChatResp", success: false, error: "Unknown_error"}));
+    }
+
+    async clearChatHistory(ws, user_id, msg) {
+        if (!msg.chat.is_ls && !msg.member.is_admin) {
+            this.send(websocketResponseDTO(msg, false, {}, "Permission_denied"))
+                return;
+        }
+        await model.clearMessages(msg.chat.chat_id);
+        await sendToAllChatMembers({
+                type: "clearChatHistory",
+                success: true,
+                data: {
+                    chat_id: msg.chat.chat_id
+                }
+            }, msg.chat.chat_id, user_id, false)
     }
 
 }
@@ -464,47 +522,51 @@ wss.on('connection', (ws, req) => {
     let controller = new WebsocketController();
 
     controller.on('sendMessage', new ChatDecorator(
-        new MemberDecorator(new ChatTextDecorator(controller.createMessage), false)
+        new MemberDecorator(new ChatTextDecorator(controller.createMessage.bind(controller)), false)
     ))
 
     controller.on('updateMessage', new ChatDecorator(
         new MemberDecorator(
             new MessageAccessDecorator(
-                new ChatTextDecorator(controller.updateMessage), false),
+                new ChatTextDecorator(controller.updateMessage.bind(controller)), false),
             false
         )
     ))
 
     controller.on('deleteMessage', new MessageDecorator(new ChatDecorator(
         new MemberDecorator(
-            new MessageAccessDecorator(controller.deleteMessage, true),
+            new MessageAccessDecorator(controller.deleteMessage.bind(controller), true),
             false
         )
     )))
 
-    controller.on('createChat', controller.createChat);
+    controller.on('createChat', controller.createChat.bind(controller));
 
     controller.on('updateChat', new ChatDecorator(
-        new MemberDecorator(controller.updateChat, true)
+        new MemberDecorator(controller.updateChat.bind(controller), true)
     ))
 
     controller.on('deleteChat', new ChatDecorator(
-        new MemberDecorator(controller.deleteChat, true)
+        new MemberDecorator(controller.deleteChat.bind(controller), false)
     ))
 
     controller.on('leaveChat', new ChatDecorator(
-        new MemberDecorator(controller.leaveChat, false)
+        new MemberDecorator(controller.leaveChat.bind(controller), false)
     ))
 
     controller.on('kickFromChat', new ChatDecorator(
-        new MemberDecorator(controller.kickFromChat, true)
+        new MemberDecorator(controller.kickFromChat.bind(controller), true)
+    ))
+
+    controller.on('clearChatHistory', new ChatDecorator(
+        new MemberDecorator(controller.clearChatHistory.bind(controller), false)
     ))
 
     controller.on('getInviteLink', new ChatDecorator(
-        new MemberDecorator(controller.getInviteLink, false)
+        new MemberDecorator(controller.getInviteLink.bind(controller), false)
     ))
 
-    controller.on('joinChat', controller.joinChatByLink)
+    controller.on('joinChat', controller.joinChatByLink.bind(controller))
 
 
     ws.on('message', async (message) => {

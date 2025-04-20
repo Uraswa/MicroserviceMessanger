@@ -91,12 +91,12 @@ app.get('/api/getLastChatMessage', async (req, res) => {
         let userProfiles = result.data.data.profiles;
 
         return res.status(200).json({
-                success: true,
-                data: {
-                    msg: msg,
-                    profile: userProfiles ? userProfiles[0] : null
-                }
-            });
+            success: true,
+            data: {
+                msg: msg,
+                profile: userProfiles ? userProfiles[0] : null
+            }
+        });
 
     } catch (error) {
         res.status(500).json({
@@ -132,12 +132,12 @@ app.get('/joinChat', async (req, res) => {
 
         let member = await model.getChatMember(chat_id, user.user_id, false);
         if (member) {
-            return res.redirect("http://localhost:9000?user_id="+user.user_id)
+            return res.redirect("http://localhost:9000?user_id=" + user.user_id)
         }
 
         let joinRes = await model.joinChatByInviteLink(user.user_id, req.query.link);
         if (joinRes.error) {
-             return res.status(500).json({
+            return res.status(500).json({
                 success: false,
                 error: "Чат не найден"
             });
@@ -160,7 +160,7 @@ app.get('/joinChat', async (req, res) => {
                     nickname: profile.nickname
                 }
             }, chat.chat_id, user.user_id, false);
-            res.redirect("http://localhost:9000?user_id="+user.user_id)
+            res.redirect("http://localhost:9000?user_id=" + user.user_id)
         }
     } catch (error) {
         res.status(500).json({
@@ -255,14 +255,27 @@ app.get('/api/getChatInfo', async (req, res) => {
     if (!user) return not_auth(res);
 
     try {
-        const {chat_id, last_message_id = undefined} = req.query;
+        let {chat_id, last_message_id = undefined, other_user_id} = req.query;
 
-        if (!chat_id) {
+
+        if (!chat_id && !other_user_id) {
             return res.status(400).json({
                 success: false,
-                error: 'chat_id is required'
+                error: 'chat_id or other_user_id is required'
             });
         }
+
+        if (other_user_id) {
+            let getRes = await model.getChatByOtherUserId(user.user_id, other_user_id);
+            if (!getRes) {
+                return res.status(200).json({
+                    success: false,
+                    error: 'chat_not_found'
+                });
+            }
+            chat_id = getRes.chat_id;
+        }
+
 
         let chat = await model.getChatById(chat_id);
         if (!chat) {
@@ -273,6 +286,7 @@ app.get('/api/getChatInfo', async (req, res) => {
         }
 
         let chat_name = chat.chat_name;
+        let is_ls = chat.is_ls;
 
         if (!await model.getChatMember(chat_id, user.user_id)) {
             return res.status(403).json({
@@ -301,7 +315,7 @@ app.get('/api/getChatInfo', async (req, res) => {
 
         res.status(200).json({
             success: true,
-            data: {messages, userProfiles, members, chat_name}
+            data: {messages, userProfiles, members, chat_name, is_ls, chat_id}
         });
 
     } catch (error) {

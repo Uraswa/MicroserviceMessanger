@@ -29,9 +29,9 @@ app.get('/api/getUserProfilesByIds', async (req, res) => {
     ids = JSON.parse(ids);
     let profiles = await model.getUserProfilesByIds(ids, ids.length);
     res.status(200).json({
-            success: true,
-            data: {profiles}
-        });
+        success: true,
+        data: {profiles}
+    });
 
 })
 
@@ -41,8 +41,20 @@ app.get('/api/getProfiles', async (req, res) => {
 
     try {
 
-        let {profileName} = req.query.profileName
+        let profileName = req.query.profileName;
 
+        if (!profileName || profileName.length > 40) {
+            return res.status(400).json({
+                success: false,
+                error: "wrong idenfier"
+            });
+        }
+
+        let profiles = await model.getUserProfiles(profileName);
+        return res.status(200).json({
+                    success: true,
+                    data: profiles
+                });
 
     } catch (error) {
         res.status(500).json({
