@@ -423,6 +423,12 @@ async function getChatMember(chat_id, user_id, must_be_not_kicked = true) {
     return result.rows[0];
 }
 
+async function blockUnblockUserInChat(chat_id, other_user_id, block_state) {
+    const query = "UPDATE chat_member SET is_blocked = $1 WHERE chat_id = $2 and user_id = $3 RETURNING *";
+    const result = await pool.query(query, [block_state, chat_id, other_user_id]);
+    return result.rows[0];
+}
+
 async function getMessages(chat_id, last_message_id) {
     const query = `
         SELECT * FROM messages 
@@ -450,7 +456,7 @@ async function clearMessages(chat_id) {
 
 async function getChatMembers(chat_id){
     const query = `
-        SELECT user_id, is_admin FROM chat_member WHERE chat_id = $1       
+        SELECT user_id, is_admin, is_blocked FROM chat_member WHERE chat_id = $1       
     `
 
     const result = await pool.query(query, [chat_id]);
@@ -509,6 +515,7 @@ export {
     kickFromChat,
     getChatIdByInviteLink,
     getChatByOtherUserId,
-    clearMessages
+    clearMessages,
+    blockUnblockUserInChat
 
 }

@@ -380,6 +380,41 @@ class WebsocketController {
             }, msg.chat.chat_id, user_id, false)
     }
 
+    async blockUnblockUserInChat(ws, user_id, msg) {
+        if (!msg.chat.is_ls && !msg.member.is_admin) {
+            this.send(websocketResponseDTO(msg, false, {}, "Permission_denied"))
+            return;
+        }
+
+        let {other_user_id, block_state} = msg.data;
+        let otherMember = await model.getChatMember(msg.chat.chat_id, other_user_id);
+
+        if (!otherMember) {
+             return this.send(websocketResponseDTO(msg, false, {}, "User_not_found"))
+
+        }
+
+        if (otherMember.is_blocked && block_state || !otherMember.is_blocked && !block_state) {
+            return;
+        }
+
+        let blockUnblockResult = await model.blockUnblockUserInChat(msg.chat.chat_id, other_user_id, block_state);
+        if (!blockUnblockResult) {
+            this.send(websocketResponseDTO(msg, false, "Unknown_error"))
+            return;
+        }
+
+        await sendToAllChatMembers({
+                type: "blockUnblockUserInChat",
+                success: true,
+                data: {
+                    chat_id: msg.chat.chat_id,
+                    other_user_id: other_user_id,
+                    block_state: block_state
+                }
+            }, msg.chat.chat_id, user_id, false)
+    }
+
 }
 
 class WebsocketDecorator {
@@ -438,16 +473,17 @@ class MessageDecorator extends WebsocketDecorator {
 
 class MemberDecorator extends WebsocketDecorator {
 
-    constructor(callback, adminRequired) {
+    constructor(callback, adminRequired, mustBeNotBlocked) {
         super(callback);
 
         this.adminRequired = adminRequired;
+        this.mustBeNotBlocked = mustBeNotBlocked;
     }
 
     async callback(ws, user_id, msg) {
 
         let member = await model.getChatMember(msg.data.chat_id, user_id);
-        if (!member || !member.is_admin && this.adminRequired || member.is_kicked) {
+        if (!member || !member.is_admin && this.adminRequired || member.is_kicked || this.mustBeNotBlocked && member.is_blocked) {
             ws.send(JSON.stringify({type: msg.type + "Resp", success: false, error: "Permission_denied"}));
             return;
         }
@@ -522,14 +558,17 @@ wss.on('connection', (ws, req) => {
     let controller = new WebsocketController();
 
     controller.on('sendMessage', new ChatDecorator(
-        new MemberDecorator(new ChatTextDecorator(controller.createMessage.bind(controller)), false)
+        new MemberDecorator(
+            new ChatTextDecorator(controller.createMessage.bind(controller)),
+            false, true
+        )
     ))
 
     controller.on('updateMessage', new ChatDecorator(
         new MemberDecorator(
             new MessageAccessDecorator(
                 new ChatTextDecorator(controller.updateMessage.bind(controller)), false),
-            false
+            false, true
         )
     ))
 
@@ -552,6 +591,10 @@ wss.on('connection', (ws, req) => {
 
     controller.on('leaveChat', new ChatDecorator(
         new MemberDecorator(controller.leaveChat.bind(controller), false)
+    ))
+
+    controller.on('blockUnblockUserInChat', new ChatDecorator(
+        new MemberDecorator(controller.blockUnblockUserInChat.bind(controller), false)
     ))
 
     controller.on('kickFromChat', new ChatDecorator(
