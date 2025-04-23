@@ -4,12 +4,16 @@ import cors from "cors";
 
 const app = express()
 app.use(express.json())
-app.use(cors())
+app.use(cors({
+    origin: true, // или true для любого origin
+  //credentials: true, // разрешаем куки и авторизационные заголовки
+  allowedHeaders: ['Content-Type', 'Authorization']
+}))
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
 
 function auth(req) {
-    return {user_id: req.query.user_id ? req.query.user_id : 1}
+    return {user_id: req.query.user_id ? req.query.user_id : 1, is_server: true}
 }
 
 function not_auth(res) {
@@ -52,9 +56,9 @@ app.get('/api/getProfiles', async (req, res) => {
 
         let profiles = await model.getUserProfiles(profileName);
         return res.status(200).json({
-                    success: true,
-                    data: profiles
-                });
+            success: true,
+            data: profiles
+        });
 
     } catch (error) {
         res.status(500).json({
@@ -90,6 +94,41 @@ app.get('/api/getProfile', async (req, res) => {
         });
     }
 });
+
+app.post('/api/createProfile', async (req, res) => {
+    const user = auth(req);
+    if (!user || !user.is_server) return not_auth(res);
+
+    try {
+        const {user_id, nickname} = req.body;
+
+        if (!nickname || nickname.length > 40) {
+            return res.status(400).json({
+                success: false,
+                error: 'Название профиля должно быть не пустым и не длиннее 25 символов!',
+                error_field: "nickname"
+            });
+        }
+
+        let profile = await model.createUserProfile(user_id, nickname);
+        if (!profile) {
+            return res.status(400).json({
+                success: false,
+                error: 'Unknown_error'
+            });
+        }
+
+        res.status(200).json({
+            success: true
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
 
 app.patch('/api/updateProfile', async (req, res) => {
     const user = auth(req);

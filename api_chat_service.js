@@ -3,19 +3,45 @@ import express from 'express'
 import axios from "axios";
 import cors from 'cors'
 import {sendToAllChatMembers, sendToExactMember, getChatParticipants} from "./brokerConnector.js";
+import tokenService from "./services/tokenService.js";
+import cookieParser from "cookie-parser";
 
 const app = express()
 app.use(express.json())
-app.use(cors())
+app.use(cookieParser());
+app.use(cors({
+    origin: "http://localhost:9000", // или true для любого origin
+  credentials: true, // разрешаем куки и авторизационные заголовки
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
 
 function auth(req) {
-    return {user_id: req.query.user_id ? req.query.user_id : 1}
+
+    const authorizationHeader = req.headers.authorization;
+    if (!authorizationHeader) {
+        return false;
+    }
+
+    const accessToken = authorizationHeader.split(' ')[1];
+    if (!accessToken) {
+        return false;
+    }
+
+    const userData = tokenService.validateAccessToken(accessToken);
+    if (!userData) {
+        return false;
+    }
+
+    return userData;
 }
 
 function not_auth(res) {
-    return "dadad"
+    return res.status(401).json({
+        success: false,
+        error: "Not_authorized"
+    });
 }
 
 async function getProfile(user_id) {
