@@ -1,10 +1,10 @@
 ﻿import * as model from './db.js'
 import express from 'express'
-import axios from "axios";
 import cors from 'cors'
 import {sendToAllChatMembers, sendToExactMember, getChatParticipants} from "./brokerConnector.js";
 import tokenService from "./services/tokenService.js";
 import cookieParser from "cookie-parser";
+import InnerCommunicationService from "./services/innerCommunicationService.js";
 
 const app = express()
 app.use(express.json())
@@ -45,7 +45,8 @@ function not_auth(res) {
 }
 
 async function getProfile(user_id) {
-    let response = await axios.get(`http://localhost:8001/api/getProfile?user_id=${user_id}`);
+    //let response = await axios.get(`http://localhost:8001/api/getProfile?user_id=${user_id}`);
+    let response = await InnerCommunicationService.get(`/api/getProfile?user_id=${user_id}`, 8001);
     if (response.status === 200) {
         return response.data.data;
     } else {
@@ -69,11 +70,13 @@ app.get('/api/getChats', async (req, res) => {
         let usersIds = new Set();
         for (let chat of chats) {
             if (chat.last_message_user_id) usersIds.add(chat.last_message_user_id);
+            if (chat.other_user_id) usersIds.add(chat.other_user_id);
         }
 
         let userProfiles = [];
         if (usersIds.size) {
-            let result = await axios.get(`http://localhost:8001/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(usersIds))}`)
+            //let result = await axios.get(`http://localhost:8001/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(usersIds))}`)
+            let result = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(usersIds))}`, 8001)
             userProfiles = result.data.data.profiles;
         }
 
@@ -113,7 +116,7 @@ app.get('/api/getLastChatMessage', async (req, res) => {
             });
         }
 
-        let result = await axios.get(`http://localhost:8001/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([msg.user_id]))}`)
+        let result = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([msg.user_id]))}`, 8001)
         let userProfiles = result.data.data.profiles;
 
         return res.status(200).json({
@@ -158,7 +161,9 @@ app.get('/joinChat', async (req, res) => {
 
         let member = await model.getChatMember(chat_id, user.user_id, false);
         if (member) {
-            return res.redirect("http://localhost:9000?user_id=" + user.user_id)
+            return res.status(200).json({
+                success: true
+            });
         }
 
         let joinRes = await model.joinChatByInviteLink(user.user_id, req.query.link);
@@ -186,7 +191,9 @@ app.get('/joinChat', async (req, res) => {
                     nickname: profile.nickname
                 }
             }, chat.chat_id, user.user_id, false);
-            res.redirect("http://localhost:9000?user_id=" + user.user_id)
+            return res.status(200).json({
+                success: true
+            });
         }
     } catch (error) {
         res.status(500).json({
@@ -226,7 +233,7 @@ app.get('/api/getOrCreateInvitationLink', async (req, res) => {
             });
         }
 
-        inviteLink = "http://localhost:8000/joinChat?link=" + inviteLink;
+        inviteLink = "http://localhost:9000/joinChat/" + inviteLink;
 
         res.status(200).json({
             success: true,
@@ -335,7 +342,7 @@ app.get('/api/getChatInfo', async (req, res) => {
             userIds.add(member.user_id)
         }
 
-        let profiles = await axios.get(`http://localhost:8001/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(userIds))}`)
+        let profiles = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(userIds))}`, 8001)
 
         let userProfiles = profiles.data.data.profiles;
 

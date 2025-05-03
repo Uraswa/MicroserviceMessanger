@@ -1,9 +1,9 @@
 ﻿import jwt from "jsonwebtoken";
 
 class TokenService {
-    generateTokens(payload) {
-        const accessToken = jwt.sign(payload, process.env.JWT_ACCESS_SECRET, {expiresIn: '1h'})
-        const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {expiresIn: '24h'})
+    generateTokens(payload, access_live_time = '1h', jwt_access_live_time = '24h') {
+        const accessToken = jwt.sign(payload, process.env.JWT_ACCESS_SECRET, {expiresIn: access_live_time})
+        const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {expiresIn: jwt_access_live_time})
         return {
             accessToken,
             refreshToken

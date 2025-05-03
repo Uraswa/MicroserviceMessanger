@@ -12,91 +12,6 @@ const pool = new Pool({
     port: 5432,
 });
 
-async function createUser(email, password, activationLink) {
-    let hashedPassword = await bcrypt.hash(password, 2304)
-    const query = "INSERT INTO users (email, password, activation_link) VALUES ($1, $2, $3) RETURNING * ";
-    const values = [email, hashedPassword, activationLink];
-    const result = await pool.query(query, values);
-    return result.rows[0];
-}
-
-async function deleteUser(user_id) {
-    const query = "DELETE FROM users WHERE user_id = $1 RETURNING user_id";
-    const values = [user_id];
-    const result = await pool.query(query, values);
-    return result.rows[0];
-}
-
-
-async function authUser(email, password) {
-    const query = "SELECT user_id,password FROM users WHERE email = $1 and is_activated = true"
-    const values = [email];
-    const result = await pool.query(query, values);
-    if (!result.rows[0]) return undefined
-
-    let compareResult = await bcrypt.compare(password, result.rows[0].password);
-
-    if (compareResult) return result.rows[0];
-    return undefined;
-}
-
-async function changeUserPassword(newPassword, password_change_token) {
-    let hashedPassword = await bcrypt.hash(newPassword, 2304)
-    const query = "UPDATE users SET password = $1, password_change_token = '' WHERE password_change_token = $2 RETURNING *"
-    const values = [hashedPassword, password_change_token];
-    const result = await pool.query(query, values);
-    return result.rows[0]
-}
-
-async function getUserByEmail(email) {
-    const query = `SELECT *
-                   FROM users
-                   WHERE email = $1`
-    const result = await pool.query(query, [email]);
-    return result.rows[0]
-}
-
-async function saveRefreshToken(user_id, refresh_token) {
-    const query = "INSERT INTO user_tokens (user_id, refreshtoken) VALUES ($1, $2) RETURNING *";
-    const result = await pool.query(query, [user_id, refresh_token]);
-    return result;
-}
-
-async function findRefreshToken(refresh_token) {
-    const query = "SELECT * FROM user_tokens WHERE refreshtoken = $1"
-    const result = await pool.query(query, [refresh_token]);
-    return result.rows[0]
-}
-
-async function removeRefreshToken(refresh_token) {
-    const query = "DELETE FROM user_tokens WHERE refreshtoken = $1 RETURNING *";
-    const result = await pool.query(query, [refresh_token]);
-    return result.rows[0];
-}
-
-async function setForgotPasswordToken(user_id, forgotPasswordToken) {
-    const query = "UPDATE users SET password_change_token = $1 WHERE user_id =  $2 RETURNING *";
-    const result = await pool.query(query, [forgotPasswordToken, user_id]);
-    return result.rows[0]
-}
-
-async function findUserByPasswordForgotToken(passwordForgotToken) {
-    const query = "SELECT user_id, is_activated FROM users WHERE password_change_token = $1";
-    const result = await pool.query(query, [passwordForgotToken]);
-    return result.rows[0]
-}
-
-async function findUserByActivationLink(activationLink){
-    const query = "SELECT user_id FROM users WHERE activation_link = $1"
-    const result = await pool.query(query, [activationLink]);
-    return result.rows[0]
-}
-
-async function activateUser(user_id) {
-    const query = "UPDATE users SET is_activated = true, activation_link = NULL WHERE user_id = $1 RETURNING *"
-    const result = await pool.query(query, [user_id])
-    return result.rows[0]
-}
 
 async function getChatParticipants(chatId) {
     try {
@@ -371,70 +286,6 @@ async function updateGroupChat(chatId, newChatName) {
     }
 }
 
-async function getUserProfile(userId) {
-    const query = `
-        SELECT u.user_id,
-               up.nickname,
-               up.description,
-               up.birth_date
-        FROM users u
-                 LEFT JOIN user_profiles up ON u.user_id = up.user_id
-        WHERE u.user_id = $1`;
-    const result = await pool.query(query, [userId]);
-    return result.rows[0];
-}
-
-async function createUserProfile(userId, nickname) {
-    let result = await pool.query(
-        `INSERT INTO user_profiles (user_id, nickname)
-         VALUES ($1, $2) RETURNING *`,
-        [userId, nickname]
-    );
-    return result;
-}
-
-async function updateUserProfile(userId, {nickname, description, birthDate}) {
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        const existsResult = await client.query(
-            `SELECT 1
-             FROM user_profiles
-             WHERE user_id = $1`,
-            [userId]
-        );
-
-        let result;
-        if (existsResult.rows.length > 0) {
-
-
-            result = await client.query(
-                `UPDATE user_profiles
-                 SET description = $1,
-                     birth_date  = $2
-                 WHERE user_id = $3 RETURNING *`,
-                [description, birthDate, userId]
-            );
-        } else {
-            // Insert new
-            result = await client.query(
-                `INSERT INTO user_profiles (user_id, nickname, description, birth_date)
-                 VALUES ($1, $4, $2, $3) RETURNING *`,
-                [userId, description, birthDate, nickname]
-            );
-        }
-
-        await client.query('COMMIT');
-        return result.rows[0];
-    } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-    } finally {
-        client.release();
-    }
-}
-
 async function getLastChatMessage(chat_id) {
     const query = `SELECT *
                    FROM messages
@@ -558,14 +409,14 @@ async function clearMessages(chat_id) {
     await pool.query(query, values);
 }
 
-async function getChatMembers(chat_id) {
+async function getChatMembers(chat_id, is_kicked = false) {
     const query = `
         SELECT user_id, is_admin, is_blocked
         FROM chat_member
-        WHERE chat_id = $1
+        WHERE chat_id = $1 and is_kicked = $2
     `
 
-    const result = await pool.query(query, [chat_id]);
+    const result = await pool.query(query, [chat_id, is_kicked]);
     return result.rows;
 }
 
@@ -576,37 +427,11 @@ async function getUserById(user_id) {
     const result = await pool.query(query, [user_id]);
     return result.rows[0];
 }
-
-async function getUserProfilesByIds(userIds, len) {
-    let ids = "";
-    userIds.forEach((v, i) => {
-
-        ids += Number.parseInt(v).toString() + (i !== len - 1 ? ", " : "");
-    });
-
-    const query = `SELECT user_id, nickname
-                   FROM user_profiles
-                   WHERE user_id IN (${ids})`;
-
-    const result = await pool.query(query);
-    return result.rows;
-}
-
-async function getUserProfiles(profileName) {
-    const query = `SELECT user_id, nickname
-                   FROM user_profiles
-                   WHERE nickname ILIKE $1`;
-    const result = await pool.query(query, ['%' + profileName + '%']);
-    return result.rows;
-}
-
 export {
-    getUserProfiles,
     getChatMembers,
     getMessages,
     getMessageById,
     getChats,
-    getUserProfilesByIds,
     createMessage,
     updateMessage,
     deleteMessage,
@@ -616,8 +441,6 @@ export {
     joinChatByInviteLink,
     updateGroupChat,
     deleteGroupChat,
-    getUserProfile,
-    updateUserProfile,
     getChatMember,
     getChatById,
     getUserById,
@@ -628,19 +451,5 @@ export {
     getChatIdByInviteLink,
     getChatByOtherUserId,
     clearMessages,
-    blockUnblockUserInChat,
-    createUser,
-    deleteUser,
-    authUser,
-    changeUserPassword,
-    getUserByEmail,
-    createUserProfile,
-    saveRefreshToken,
-    findRefreshToken,
-    removeRefreshToken,
-    setForgotPasswordToken,
-    findUserByPasswordForgotToken,
-    findUserByActivationLink,
-    activateUser,
-
+    blockUnblockUserInChat
 }

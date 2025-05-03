@@ -1,8 +1,9 @@
 import {WebSocketServer} from "ws";
 import redis from "redis";
 import * as model from "./db.js"
-import axios from "axios";
 import {sendToAllChatMembers, sendToExactMember, getChatParticipants} from "./brokerConnector.js";
+import InnerCommunicationService from "./services/innerCommunicationService.js";
+import tokenService from "./services/tokenService.js";
 
 
 const redisSubscriber = redis.createClient();
@@ -70,7 +71,7 @@ class WebsocketController {
 
         if (message && message.message_id) {
 
-            let userProfileResp = await axios.get(`http://localhost:8001/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id]))}`)
+            let userProfileResp = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id]))}`, 8001)
 
             let nickname = 'Неизвестно'
             if (userProfileResp.status === 200 && userProfileResp.data.data.profiles.length !== 0) {
@@ -211,14 +212,14 @@ class WebsocketController {
     async createChat(ws, user_id, msg) {
         let {chat_name, is_ls, other_user_id, text} = msg.data;
         if (other_user_id) {
-            let otherUser = await model.getUserById(other_user_id);
 
-            if (!otherUser) {
+            let otherUserResponse = await InnerCommunicationService.get('/api/doesUserExist?user_id='+user_id, 8002);
+            if (otherUserResponse.status !== 200 || !otherUserResponse.data.success || !otherUserResponse.data.data.exist) {
                 this.send(websocketResponseDTO(msg, false, {}, "User_not_exist"))
                 return;
             }
 
-            if (await model.getChatByOtherUserId(user_id, other_user_id)){
+            if (await model.getChatByOtherUserId(user_id, other_user_id)) {
                 this.send(websocketResponseDTO(msg, false, {}, "Chat_already_exists"));
                 return;
             }
@@ -226,7 +227,7 @@ class WebsocketController {
             let privateChatRes = await model.createPrivateChat(user_id, other_user_id)
             if (privateChatRes) {
 
-                let userProfileResp = await axios.get(`http://localhost:8001/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id, other_user_id]))}`)
+                let userProfileResp = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id, other_user_id]))}`, 8001)
 
                 let nickname1 = "";
                 let nickname2 = "";
@@ -273,7 +274,7 @@ class WebsocketController {
                 await this.route(ws, user_id, {
                     type: "sendMessage",
                     data: {
-                        chat_id:  privateChatRes.chat_id,
+                        chat_id: privateChatRes.chat_id,
                         text: text
                     }
                 })
@@ -346,7 +347,7 @@ class WebsocketController {
 
         if (!msg.chat.is_ls && !msg.member.is_admin) {
             this.send(websocketResponseDTO(msg, false, {}, "Permission_denied"))
-                return;
+            return;
         }
 
         let chatParticipants = await getChatParticipants(msg.chat.chat_id);
@@ -368,16 +369,16 @@ class WebsocketController {
     async clearChatHistory(ws, user_id, msg) {
         if (!msg.chat.is_ls && !msg.member.is_admin) {
             this.send(websocketResponseDTO(msg, false, {}, "Permission_denied"))
-                return;
+            return;
         }
         await model.clearMessages(msg.chat.chat_id);
         await sendToAllChatMembers({
-                type: "clearChatHistory",
-                success: true,
-                data: {
-                    chat_id: msg.chat.chat_id
-                }
-            }, msg.chat.chat_id, user_id, false)
+            type: "clearChatHistory",
+            success: true,
+            data: {
+                chat_id: msg.chat.chat_id
+            }
+        }, msg.chat.chat_id, user_id, false)
     }
 
     async blockUnblockUserInChat(ws, user_id, msg) {
@@ -390,7 +391,7 @@ class WebsocketController {
         let otherMember = await model.getChatMember(msg.chat.chat_id, other_user_id);
 
         if (!otherMember) {
-             return this.send(websocketResponseDTO(msg, false, {}, "User_not_found"))
+            return this.send(websocketResponseDTO(msg, false, {}, "User_not_found"))
 
         }
 
@@ -405,14 +406,14 @@ class WebsocketController {
         }
 
         await sendToAllChatMembers({
-                type: "blockUnblockUserInChat",
-                success: true,
-                data: {
-                    chat_id: msg.chat.chat_id,
-                    other_user_id: other_user_id,
-                    block_state: block_state
-                }
-            }, msg.chat.chat_id, user_id, false)
+            type: "blockUnblockUserInChat",
+            success: true,
+            data: {
+                chat_id: msg.chat.chat_id,
+                other_user_id: other_user_id,
+                block_state: block_state
+            }
+        }, msg.chat.chat_id, user_id, false)
     }
 
 }
@@ -538,22 +539,7 @@ class MessageAccessDecorator extends WebsocketDecorator {
 
 wss.on('connection', (ws, req) => {
 
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    let user_id = url.searchParams.get('user_id');
-
-    if (!user_id) {
-        ws.close(4001, 'User ID required');
-        return;
-    }
-
-    user_id = Number.parseInt(user_id);
-
-    console.log(`User connected: ${user_id}`);
-
-    if (!clients.has(user_id)) {
-        clients.set(user_id, []);
-    }
-    clients.get(user_id).push(ws);
+    console.log(`Connection established: awaiting accessToken`);
 
     let controller = new WebsocketController();
 
@@ -609,13 +595,54 @@ wss.on('connection', (ws, req) => {
         new MemberDecorator(controller.getInviteLink.bind(controller), false)
     ))
 
-    controller.on('joinChat', controller.joinChatByLink.bind(controller))
+    controller.on('joinChat', controller.joinChatByLink.bind(controller));
+
+    let disconnectTimeout = setTimeout(() => {
+        console.log("Access token wasn't received: disconnecting...")
+        ws.terminate();
+    }, 5000);
+
+    let currentConnection = null;
+
+    //TODO сделать автоматическое отключение по интервалу
 
 
     ws.on('message', async (message) => {
         try {
             let json4ik = JSON.parse(message.toString());
-            await controller.route(ws, user_id, json4ik);
+            let accessToken = json4ik.accessToken;
+
+            let userData = tokenService.validateAccessToken(accessToken);
+
+            if (!userData || !userData.user_id || currentConnection != null && currentConnection.user_id !== userData.user_id) {
+                if (disconnectTimeout != null) clearTimeout(disconnectTimeout);
+                ws.close(4001, "Not_authorized");
+                return;
+            }
+
+            if (json4ik.type === "init") {
+                clearTimeout(disconnectTimeout)
+                disconnectTimeout = null;
+
+                console.log(`User accessToken valid: ${userData.user_id}`);
+
+                if (!clients.has(userData.user_id)) {
+                    clients.set(userData.user_id, []);
+                }
+
+                currentConnection = {
+                    ws: ws,
+                    user_id: userData.user_id,
+                    accessToken: accessToken
+                };
+
+                clients.get(userData.user_id).push(currentConnection);
+
+                return;
+
+            }
+
+            await controller.route(ws, userData.user_id, json4ik);
         } catch (err) {
             console.error('Error processing message:', err);
         }
@@ -623,17 +650,26 @@ wss.on('connection', (ws, req) => {
 
 
     ws.on('close', () => {
-        const userWs = clients.get(user_id);
-        if (userWs) {
-            const index = userWs.indexOf(ws);
-            if (index > -1) {
-                userWs.splice(index, 1);
+
+        if (disconnectTimeout != null) clearTimeout(disconnectTimeout);
+        if (currentConnection !== null) {
+            console.log("Close event received for user: " + currentConnection.user_id);
+            const userWs = clients.get(currentConnection.user_id);
+            if (userWs) {
+                const index = userWs.indexOf(ws);
+                if (index > -1) {
+                    userWs.splice(index, 1);
+                }
+                if (userWs.length === 0) {
+                    clients.delete(currentConnection.user_id);
+                }
             }
-            if (userWs.length === 0) {
-                clients.delete(user_id);
-            }
+            console.log(`User disconnected: ${currentConnection.user_id}`);
+            currentConnection = null;
+        } else {
+            console.log("Anonym user disconnected.")
         }
-        console.log(`User disconnected: ${user_id}`);
+
     });
 });
 
@@ -652,7 +688,18 @@ async function setupRedisSubscriptions() {
             if (clients.has(recipientId)) {
                 const recipientConnections = clients.get(recipientId);
 
-                for (const ws of recipientConnections) {
+                for (const userConnection of recipientConnections) {
+                    let {accessToken, ws, user_id} = userConnection;
+
+                    if (userConnection.ws === null) continue;
+
+                    if (!tokenService.validateAccessToken(accessToken)){
+                        userConnection.ws = null;
+                        console.log(`Disconnecting user ${user_id}: not authorized`);
+                        ws.close(4001, "Not_authorized");
+                        continue;
+                    }
+
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.send(message);
                     }
