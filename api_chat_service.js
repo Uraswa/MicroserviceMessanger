@@ -68,6 +68,34 @@ app.get('/api/getChats', async (req, res) => {
         const chats = await model.getChats(user.user_id, filters);
 
         let usersIds = new Set();
+        let chatsMap = new Map();
+        let shards = new Map();
+
+        for (let chat of chats) {
+            let shard = model.getShard(chat.chat_id)
+            if (!shards.has(shard.name)){
+                shards.set(shard.name, []);
+            }
+
+            chat.last_message_timestamp = chat.created_time;
+
+            shards.get(shard.name).push(chat.chat_id);
+            chatsMap[chat.chat_id] = chat;
+
+        }
+
+        for (const [shard, chatIds] of shards){
+            let messages = await model.getLastMessagesFromSameShard(chatIds);
+            for (let msg of messages){
+                let chat = chatsMap[msg.chat_id];
+                chat.last_message_id = msg.message_id;
+                chat.last_message_text = msg.text;
+                chat.last_message_user_id = msg.user_id;
+                chat.last_message_timestamp = msg.timestamp;
+            }
+        }
+
+
         for (let chat of chats) {
             if (chat.last_message_user_id) usersIds.add(chat.last_message_user_id);
             if (chat.other_user_id) usersIds.add(chat.other_user_id);

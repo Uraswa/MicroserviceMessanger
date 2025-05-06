@@ -112,7 +112,7 @@ class WebsocketController {
             return;
         }
 
-        let updateReq = await model.updateMessage(message.message_id, msg.data.text);
+        let updateReq = await model.updateMessage(msg.data.chat_id, message.message_id, msg.data.text);
         if (updateReq) {
             await sendToAllChatMembers({
                 type: "updateMessage",
@@ -126,7 +126,7 @@ class WebsocketController {
     }
 
     async deleteMessage(ws, user_id, msg) {
-        let deleteMessageReq = await model.deleteMessage(msg.data.message_id)
+        let deleteMessageReq = await model.deleteMessage(msg.data.chat_id, msg.data.message_id)
         if (deleteMessageReq) {
             await sendToAllChatMembers({
                 type: "deleteMessage",
@@ -453,25 +453,6 @@ class ChatDecorator extends WebsocketDecorator {
     }
 }
 
-class MessageDecorator extends WebsocketDecorator {
-
-    async callback(ws, user_id, msg) {
-
-        let message = await model.getMessageById(msg.data.message_id);
-        console.log(message)
-
-        if (!message) {
-            ws.send(JSON.stringify({type: msg.type + "Resp", success: false, error: "Chat_not_exist"}));
-            return;
-        }
-
-        msg.data.chat_id = message.chat_id;
-        msg.message = message;
-        await this.call(ws, user_id, msg)
-
-    }
-}
-
 class MemberDecorator extends WebsocketDecorator {
 
     constructor(callback, adminRequired, mustBeNotBlocked) {
@@ -519,7 +500,7 @@ class MessageAccessDecorator extends WebsocketDecorator {
 
     async callback(ws, user_id, msg) {
 
-        let message = await model.getMessageById(msg.data.message_id);
+        let message = await model.getMessageById(msg.data.chat_id, msg.data.message_id);
         if (!message) {
             ws.send(JSON.stringify({type: msg.type + "Resp", success: false, error: "Message_not_exist"}));
             return;
@@ -558,12 +539,12 @@ wss.on('connection', (ws, req) => {
         )
     ))
 
-    controller.on('deleteMessage', new MessageDecorator(new ChatDecorator(
+    controller.on('deleteMessage', new ChatDecorator(
         new MemberDecorator(
             new MessageAccessDecorator(controller.deleteMessage.bind(controller), true),
             false
         )
-    )))
+    ));
 
     controller.on('createChat', controller.createChat.bind(controller));
 

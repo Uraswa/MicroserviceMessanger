@@ -1,6 +1,6 @@
 ﻿import pg from 'pg'
 import crypto from "crypto";
-import bcrypt from "bcrypt";
+import ConsistantHashing from './helpers/ConsistantHashing.js'
 
 const {Pool} = pg;
 
@@ -11,6 +11,195 @@ const pool = new Pool({
     password: 'nice',
     port: 5432,
 });
+
+// Конфигурация шардов (все на localhost, но разные базы)
+const SHARDS = [
+    {
+        name: 'shard0', pool: new Pool({
+            user: 'nice',
+            host: 'localhost',
+            database: 'messages_db1',
+            password: 'nice',
+            port: 5432
+        })
+    },
+    {
+        name: 'shard1', pool: new Pool({
+            user: 'nice',
+            host: 'localhost',
+            database: 'messages_db2',
+            password: 'nice',
+            port: 5432
+        })
+    },
+    {
+        name: 'shard2', pool: new Pool({
+            user: 'nice',
+            host: 'localhost',
+            database: 'messages_db3',
+            password: 'nice',
+            port: 5432
+        })
+    },
+    {
+        name: 'shard3', pool: new Pool({
+            user: 'nice',
+            host: 'localhost',
+            database: 'messages_db4',
+            password: 'nice',
+            port: 5432
+        })
+    }
+];
+
+const consistentHash = new ConsistantHashing(100);
+
+for (let i in SHARDS) {
+    consistentHash.add_node(i)
+}
+
+// Функция определения шарда по chat_id
+//Используется консистентное хеширование
+function getShard(chatId) {
+    let toString = chatId.toString();
+    console.log(chatId, "shard" + consistentHash.get_node(toString))
+    return SHARDS[consistentHash.get_node(toString)]
+}
+
+// Пример функции создания сообщения
+async function createMessage(chatId, userId, text) {
+    const shard = getShard(chatId);
+    console.log(`Using ${shard.name} for chat ${chatId}`);
+
+    const client = await shard.pool.connect();
+    try {
+        const res = await client.query(
+            'INSERT INTO messages (chat_id, user_id, text) VALUES ($1, $2, $3) RETURNING *',
+            [chatId, userId, text]
+        );
+        return res.rows[0];
+    } finally {
+        client.release();
+    }
+}
+
+async function updateMessage(chatId, messageId, newText) {
+
+    const shard = getShard(chatId);
+    console.log(`Using ${shard.name} for chat ${chatId}`);
+
+    const query = `
+        UPDATE messages
+        SET text = $1
+        WHERE message_id = $2 RETURNING *`;
+    const result = await shard.pool.query(query, [newText, messageId]);
+    return result.rows[0];
+}
+
+async function deleteMessage(chatId, messageId) {
+    const shard = getShard(chatId);
+    console.log(`Using ${shard.name} for chat ${chatId}`);
+
+    const query = `DELETE
+                   FROM messages
+                   WHERE message_id = $1 RETURNING *`;
+    const result = await shard.pool.query(query, [messageId]);
+    return result.rows[0];
+}
+
+async function getMessageById(chatId, messageId) {
+    const shard = getShard(chatId);
+    console.log(`Using ${shard.name} for chat ${chatId}`);
+
+    const query = `SELECT *
+                   FROM messages
+                   WHERE message_id = $1`;
+    const values = [messageId];
+    const result = await shard.pool.query(query, values);
+    return result.rows[0];
+}
+
+async function getLastChatMessage(chat_id) {
+    const shard = getShard(chat_id);
+    console.log(`Using ${shard.name} for chat ${chat_id}`);
+    const query = `SELECT *
+                   FROM messages
+                   WHERE chat_id = $1
+                   ORDER BY timestamp DESC LIMIT 1`;
+    const values = [chat_id];
+    const result = await shard.pool.query(query, values);
+    return result.rows[0];
+}
+
+async function getLastMessagesFromSameShard(chatIds) {
+    const shard = getShard(chatIds[0]);
+
+    if (chatIds.length === 1) {
+        const query = `
+            SELECT m.chat_id, m.text, m.user_id, m.timestamp, m.message_id
+            FROM messages m
+            WHERE m.chat_id = $1
+            ORDER BY m.timestamp DESC
+            LIMIT 1
+        `;
+        let messages = await shard.pool.query(query, [chatIds[0]]);
+        return messages.rows;
+    } else if (chatIds.length === 0) {
+        return [];
+    } else {
+
+        let chatIdsJoined = '';
+        let i = 0;
+        for (let chatId of chatIds) {
+            chatIdsJoined += Number.parseInt(chatId).toString();
+            chatIdsJoined += i === chatIds.length - 1 ? '' : ', '
+            i += 1
+        }
+
+        let query = `SELECT DISTINCT ON (m.chat_id)
+                            m.chat_id, m.text, m.user_id, m.timestamp, m.message_id
+                        FROM messages m
+                        WHERE m.chat_id IN (${chatIdsJoined})
+                        ORDER BY m.chat_id, m.timestamp DESC;`
+
+        let messages = await shard.pool.query(query, []);
+        return messages.rows;
+
+    }
+
+
+}
+
+async function getMessages(chat_id, last_message_id) {
+    const shard = getShard(chat_id);
+    console.log(`Using ${shard.name} for chat ${chat_id}`);
+    const query = `
+        SELECT *
+        FROM messages
+        WHERE chat_id = $1 ${last_message_id ? 'and message_id < $2' : ''}
+        ORDER BY message_id DESC
+            LIMIT 25
+    `
+    let values = [chat_id];
+    if (last_message_id) {
+        values.push(last_message_id)
+    }
+
+    const result = await shard.pool.query(query, values);
+    return result.rows;
+}
+
+async function clearMessages(chat_id) {
+    const shard = getShard(chat_id);
+    console.log(`Using ${shard.name} for chat ${chat_id}`);
+    const query = `
+        DELETE
+        FROM messages
+        WHERE chat_id = $1
+    `
+    let values = [chat_id];
+    await pool.query(query, values);
+}
 
 
 async function getChatParticipants(chatId) {
@@ -24,41 +213,6 @@ async function getChatParticipants(chatId) {
     } catch (e) {
 
     }
-}
-
-async function getMessageById(messageId) {
-    const query = `SELECT *
-                   FROM messages
-                   WHERE message_id = $1`;
-    const values = [messageId];
-    const result = await pool.query(query, values);
-    return result.rows[0];
-}
-
-async function createMessage(chatId, userId, text) {
-    const query = `
-        INSERT INTO messages (chat_id, user_id, text)
-        VALUES ($1, $2, $3) RETURNING *`;
-    const values = [chatId, userId, text];
-    const result = await pool.query(query, values);
-    return result.rows[0];
-}
-
-async function updateMessage(messageId, newText) {
-    const query = `
-        UPDATE messages
-        SET text = $1
-        WHERE message_id = $2 RETURNING *`;
-    const result = await pool.query(query, [newText, messageId]);
-    return result.rows[0];
-}
-
-async function deleteMessage(messageId) {
-    const query = `DELETE
-                   FROM messages
-                   WHERE message_id = $1 RETURNING *`;
-    const result = await pool.query(query, [messageId]);
-    return result.rows[0];
 }
 
 async function createPrivateChat(userId1, userId2) {
@@ -286,16 +440,6 @@ async function updateGroupChat(chatId, newChatName) {
     }
 }
 
-async function getLastChatMessage(chat_id) {
-    const query = `SELECT *
-                   FROM messages
-                   WHERE chat_id = $1
-                   ORDER BY timestamp DESC LIMIT 1`;
-    const values = [chat_id];
-    const result = await pool.query(query, values);
-    return result.rows[0];
-}
-
 async function getChats(userId, filters = {}) {
     let query = `
         SELECT c.chat_id,
@@ -308,18 +452,9 @@ async function getChats(userId, filters = {}) {
                 chat_id = c.chat_id LIMIT 1) ELSE NULL
         END
         ) as other_user_id,
-    c.created_time,
-    m.message_id as last_message_id,
-    m.text as last_message_text,
-    m.user_id as last_message_user_id,
-    (CASE WHEN m.timestamp IS NULL THEN c.created_time ELSE m.timestamp END) as last_message_timestamp
+    c.created_time
 FROM chats c
          JOIN chat_member cm ON c.chat_id = cm.chat_id and cm.is_kicked = false
-         LEFT JOIN messages m ON m.message_id = (SELECT m2.message_id
-                                                 FROM messages m2
-                                                 WHERE m2.chat_id = c.chat_id
-                                                 ORDER BY m2.timestamp DESC
-                                                 LIMIT 1)
 WHERE cm.user_id =
         $1`;
 
@@ -338,7 +473,7 @@ WHERE cm.user_id =
         paramIndex++;
     }
 
-    query += ` ORDER BY CASE WHEN m.timestamp IS NULL THEN c.created_time ELSE m.timestamp END DESC `;
+    query += ` ORDER BY c.created_time DESC `;
 
     const result = await pool.query(query, values);
     return result.rows;
@@ -382,51 +517,19 @@ async function blockUnblockUserInChat(chat_id, other_user_id, block_state) {
     return result.rows[0];
 }
 
-async function getMessages(chat_id, last_message_id) {
-    const query = `
-        SELECT *
-        FROM messages
-        WHERE chat_id = $1 ${last_message_id ? 'and message_id < $2' : ''}
-        ORDER BY message_id DESC
-            LIMIT 25
-    `
-    let values = [chat_id];
-    if (last_message_id) {
-        values.push(last_message_id)
-    }
-
-    const result = await pool.query(query, values);
-    return result.rows;
-}
-
-async function clearMessages(chat_id) {
-    const query = `
-        DELETE
-        FROM messages
-        WHERE chat_id = $1
-    `
-    let values = [chat_id];
-    await pool.query(query, values);
-}
 
 async function getChatMembers(chat_id, is_kicked = false) {
     const query = `
         SELECT user_id, is_admin, is_blocked
         FROM chat_member
-        WHERE chat_id = $1 and is_kicked = $2
+        WHERE chat_id = $1
+          and is_kicked = $2
     `
 
     const result = await pool.query(query, [chat_id, is_kicked]);
     return result.rows;
 }
 
-async function getUserById(user_id) {
-    const query = `SELECT *
-                   FROM users
-                   WHERE user_id = $1`;
-    const result = await pool.query(query, [user_id]);
-    return result.rows[0];
-}
 export {
     getChatMembers,
     getMessages,
@@ -443,7 +546,6 @@ export {
     deleteGroupChat,
     getChatMember,
     getChatById,
-    getUserById,
     leaveChat,
     getChatParticipants,
     getLastChatMessage,
@@ -451,5 +553,7 @@ export {
     getChatIdByInviteLink,
     getChatByOtherUserId,
     clearMessages,
-    blockUnblockUserInChat
+    blockUnblockUserInChat,
+    getShard,
+    getLastMessagesFromSameShard
 }
