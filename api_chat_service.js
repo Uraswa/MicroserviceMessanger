@@ -72,7 +72,7 @@ app.get('/api/getChats', async (req, res) => {
         let shards = new Map();
 
         for (let chat of chats) {
-            let shard = model.getShard(chat.chat_id)
+            let shard = model.getShardByIndex(chat.shard_index)
             if (!shards.has(shard.name)){
                 shards.set(shard.name, []);
             }
@@ -95,7 +95,6 @@ app.get('/api/getChats', async (req, res) => {
             }
         }
 
-
         for (let chat of chats) {
             if (chat.last_message_user_id) usersIds.add(chat.last_message_user_id);
             if (chat.other_user_id) usersIds.add(chat.other_user_id);
@@ -103,7 +102,6 @@ app.get('/api/getChats', async (req, res) => {
 
         let userProfiles = [];
         if (usersIds.size) {
-            //let result = await axios.get(`http://localhost:8001/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(usersIds))}`)
             let result = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(usersIds))}`, 8001)
             userProfiles = result.data.data.profiles;
         }

@@ -1,6 +1,5 @@
 ﻿import pg from 'pg'
 import crypto from "crypto";
-import ConsistantHashing from './helpers/ConsistantHashing.js'
 
 const {Pool} = pg;
 
@@ -52,23 +51,49 @@ const SHARDS = [
     }
 ];
 
-const consistentHash = new ConsistantHashing(100);
+const SHARDS_CACHE = new Map();
 
-for (let i in SHARDS) {
-    consistentHash.add_node(i)
+async function getShard(chatId) {
+    let cachedShardIndex = SHARDS_CACHE.get(chatId);
+    if (cachedShardIndex) {
+        return SHARDS[cachedShardIndex];
+    }
+
+    let shard_index = await getChatShardIndex(chatId);
+    SHARDS_CACHE[chatId] = shard_index;
+
+    return SHARDS[shard_index];
 }
 
-// Функция определения шарда по chat_id
-//Используется консистентное хеширование
-function getShard(chatId) {
-    let toString = chatId.toString();
-    console.log(chatId, "shard" + consistentHash.get_node(toString))
-    return SHARDS[consistentHash.get_node(toString)]
+function getShardByIndex(shard_index) {
+    return SHARDS[shard_index];
+}
+
+async function chooseShard(){
+    let promises = [];
+    for (let shard of SHARDS) {
+        promises.push(shard.pool.query(`SELECT reltuples::bigint AS estimate FROM pg_class where relname = 'messages'`))
+    }
+    let shardStats = await Promise.all(promises);
+    let minimum = Number.MAX_SAFE_INTEGER;
+    let minimumShard = 0;
+
+    let shardIndex = 0;
+    for (let shardRes of shardStats) {
+        let estimated = Number.parseInt(shardRes.rows[0].estimate);
+        if (estimated < minimum) {
+            minimum = estimated;
+            minimumShard = shardIndex;
+        }
+        shardIndex++;
+    }
+
+    return minimumShard;
 }
 
 // Пример функции создания сообщения
 async function createMessage(chatId, userId, text) {
-    const shard = getShard(chatId);
+    const shard = await getShard(chatId);
     console.log(`Using ${shard.name} for chat ${chatId}`);
 
     const client = await shard.pool.connect();
@@ -85,7 +110,7 @@ async function createMessage(chatId, userId, text) {
 
 async function updateMessage(chatId, messageId, newText) {
 
-    const shard = getShard(chatId);
+    const shard = await getShard(chatId);
     console.log(`Using ${shard.name} for chat ${chatId}`);
 
     const query = `
@@ -97,7 +122,7 @@ async function updateMessage(chatId, messageId, newText) {
 }
 
 async function deleteMessage(chatId, messageId) {
-    const shard = getShard(chatId);
+    const shard = await getShard(chatId);
     console.log(`Using ${shard.name} for chat ${chatId}`);
 
     const query = `DELETE
@@ -108,7 +133,7 @@ async function deleteMessage(chatId, messageId) {
 }
 
 async function getMessageById(chatId, messageId) {
-    const shard = getShard(chatId);
+    const shard = await getShard(chatId);
     console.log(`Using ${shard.name} for chat ${chatId}`);
 
     const query = `SELECT *
@@ -120,7 +145,7 @@ async function getMessageById(chatId, messageId) {
 }
 
 async function getLastChatMessage(chat_id) {
-    const shard = getShard(chat_id);
+    const shard = await getShard(chat_id);
     console.log(`Using ${shard.name} for chat ${chat_id}`);
     const query = `SELECT *
                    FROM messages
@@ -132,7 +157,7 @@ async function getLastChatMessage(chat_id) {
 }
 
 async function getLastMessagesFromSameShard(chatIds) {
-    const shard = getShard(chatIds[0]);
+    const shard = await getShard(chatIds[0]);
 
     if (chatIds.length === 1) {
         const query = `
@@ -171,7 +196,7 @@ async function getLastMessagesFromSameShard(chatIds) {
 }
 
 async function getMessages(chat_id, last_message_id) {
-    const shard = getShard(chat_id);
+    const shard = await getShard(chat_id);
     console.log(`Using ${shard.name} for chat ${chat_id}`);
     const query = `
         SELECT *
@@ -190,7 +215,7 @@ async function getMessages(chat_id, last_message_id) {
 }
 
 async function clearMessages(chat_id) {
-    const shard = getShard(chat_id);
+    const shard = await getShard(chat_id);
     console.log(`Using ${shard.name} for chat ${chat_id}`);
     const query = `
         DELETE
@@ -220,9 +245,11 @@ async function createPrivateChat(userId1, userId2) {
     try {
         await client.query('BEGIN');
 
+        let shardIndex = await chooseShard();
+
         const chatResult = await client.query(
-            `INSERT INTO chats (chat_name, is_ls)
-             VALUES ('', true) RETURNING chat_id`
+            `INSERT INTO chats (chat_name, is_ls, shard_index)
+             VALUES ('', true, $1) RETURNING chat_id`, [shardIndex]
         );
         const chatId = chatResult.rows[0].chat_id;
 
@@ -248,10 +275,12 @@ async function createGroupChat(creatorId, chatName, initialMembers = []) {
     try {
         await client.query('BEGIN');
 
+        let shardIndex = await chooseShard();
+
         const chatResult = await client.query(
-            `INSERT INTO chats (chat_name, is_ls)
-             VALUES ($1, false) RETURNING chat_id`,
-            [chatName]
+            `INSERT INTO chats (chat_name, is_ls, shard_index)
+             VALUES ($1, false, $2) RETURNING chat_id`,
+            [chatName, shardIndex]
         );
         const chatId = chatResult.rows[0].chat_id;
 
@@ -445,6 +474,7 @@ async function getChats(userId, filters = {}) {
         SELECT c.chat_id,
                c.chat_id,
                c.chat_name,
+               c.shard_index,
                c.is_ls,
                (CASE
                     WHEN c.is_ls = true
@@ -480,12 +510,24 @@ WHERE cm.user_id =
 }
 
 async function getChatById(chatId) {
-    const query = `SELECT *
+    const query = `SELECT chat_id, chat_name, is_ls, shard_index, created_time
                    FROM chats
                    WHERE chat_id = $1`;
     const values = [chatId];
     const result = await pool.query(query, values);
     return result.rows[0];
+}
+
+async function getChatShardIndex(chatId) {
+    const query = `SELECT shard_index
+                   FROM chats
+                   WHERE chat_id = $1`;
+    const values = [chatId];
+    const result = await pool.query(query, values);
+
+    if (!result.rows[0]) throw new Error("Shard_not_found")
+
+    return result.rows[0].shard_index;
 }
 
 async function getChatByOtherUserId(user_id, other_user_id) {
@@ -555,5 +597,6 @@ export {
     clearMessages,
     blockUnblockUserInChat,
     getShard,
-    getLastMessagesFromSameShard
+    getLastMessagesFromSameShard,
+    getShardByIndex
 }
