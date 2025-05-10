@@ -1,10 +1,17 @@
-﻿import * as model from './db.js'
+﻿
+import dotenv from "dotenv"
+
+dotenv.config();
+
 import express from 'express'
 import cors from 'cors'
-import {sendToAllChatMembers, sendToExactMember, getChatParticipants} from "./brokerConnector.js";
 import tokenService from "./services/tokenService.js";
 import cookieParser from "cookie-parser";
 import InnerCommunicationService from "./services/innerCommunicationService.js";
+import MessagesModel from "./Model/MessagesModel.js";
+import ChatsModel from "./Model/ChatsModel.js";
+import RedisBrokerConnector from "./Websocket/library/brokers/RedisBrokerConnector.js";
+
 
 const app = express()
 app.use(express.json())
@@ -15,6 +22,9 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.get('/health', (req, res) => res.status(200).send('OK'));
+
+const brokerConnector = RedisBrokerConnector;
+await brokerConnector.initPublisher();
 
 
 function auth(req) {
@@ -65,14 +75,14 @@ app.get('/api/getChats', async (req, res) => {
             filters = JSON.parse(req.query.filters)
         }
 
-        const chats = await model.getChats(user.user_id, filters);
+        const chats = await ChatsModel.getChats(user.user_id, filters);
 
         let usersIds = new Set();
         let chatsMap = new Map();
         let shards = new Map();
 
         for (let chat of chats) {
-            let shard = model.getShardByIndex(chat.shard_index)
+            let shard = MessagesModel.getShardByIndex(chat.shard_index)
             if (!shards.has(shard.name)){
                 shards.set(shard.name, []);
             }
@@ -85,7 +95,7 @@ app.get('/api/getChats', async (req, res) => {
         }
 
         for (const [shard, chatIds] of shards){
-            let messages = await model.getLastMessagesFromSameShard(chatIds);
+            let messages = await MessagesModel.getLastMessagesFromSameShard(chatIds);
             for (let msg of messages){
                 let chat = chatsMap[msg.chat_id];
                 chat.last_message_id = msg.message_id;
@@ -125,14 +135,14 @@ app.get('/api/getLastChatMessage', async (req, res) => {
     try {
         const {chat_id} = req.query;
 
-        if (!await model.getChatMember(chat_id, user.user_id)) {
+        if (!await ChatsModel.getChatMember(chat_id, user.user_id)) {
             return res.status(403).json({
                 success: false,
                 error: 'access denied'
             });
         }
 
-        let msg = await model.getLastChatMessage(chat_id);
+        let msg = await MessagesModel.getLastChatMessage(chat_id);
         if (!msg) {
             return res.status(200).json({
                 success: true,
@@ -168,7 +178,7 @@ app.get('/joinChat', async (req, res) => {
 
     try {
 
-        let chat_id = await model.getChatIdByInviteLink(req.query.link);
+        let chat_id = await ChatsModel.getChatIdByInviteLink(req.query.link);
 
         if (!chat_id) {
             return res.status(404).json({
@@ -177,7 +187,7 @@ app.get('/joinChat', async (req, res) => {
             });
         }
 
-        let chat = await model.getChatById(chat_id);
+        let chat = await ChatsModel.getChatById(chat_id);
         if (!chat) {
             return res.status(404).json({
                 success: false,
@@ -185,14 +195,14 @@ app.get('/joinChat', async (req, res) => {
             });
         }
 
-        let member = await model.getChatMember(chat_id, user.user_id, false);
+        let member = await ChatsModel.getChatMember(chat_id, user.user_id, false);
         if (member) {
             return res.status(200).json({
                 success: true
             });
         }
 
-        let joinRes = await model.joinChatByInviteLink(user.user_id, req.query.link);
+        let joinRes = await ChatsModel.joinChatByInviteLink(user.user_id, req.query.link);
         if (joinRes.error) {
             return res.status(500).json({
                 success: false,
@@ -208,7 +218,7 @@ app.get('/joinChat', async (req, res) => {
                 });
             }
 
-            await sendToAllChatMembers({
+            await brokerConnector.sendToAllChatMembers({
                 type: "chatMemberJoined",
                 success: true,
                 data: {
@@ -243,14 +253,14 @@ app.get('/api/getOrCreateInvitationLink', async (req, res) => {
             });
         }
 
-        if (!await model.getChatMember(chat_id, user.user_id)) {
+        if (!await ChatsModel.getChatMember(chat_id, user.user_id)) {
             return res.status(403).json({
                 success: false,
                 error: 'access denied'
             });
         }
 
-        let inviteLink = await model.getOrCreateInvitationLink(chat_id, user.user_id);
+        let inviteLink = await ChatsModel.getOrCreateInvitationLink(chat_id, user.user_id);
 
         if (!inviteLink) {
             return res.status(400).json({
@@ -288,14 +298,14 @@ app.get('/api/getMessages', async (req, res) => {
             });
         }
 
-        if (!await model.getChatMember(chat_id, user.user_id)) {
+        if (!await ChatsModel.getChatMember(chat_id, user.user_id)) {
             return res.status(403).json({
                 success: false,
                 error: 'access denied'
             });
         }
 
-        const messages = await model.getMessages(chat_id, last_message_id)
+        const messages = await MessagesModel.getMessages(chat_id, last_message_id)
 
         res.status(200).json({
             success: true,
@@ -325,7 +335,7 @@ app.get('/api/getChatInfo', async (req, res) => {
         }
 
         if (other_user_id) {
-            let getRes = await model.getChatByOtherUserId(user.user_id, other_user_id);
+            let getRes = await ChatsModel.getChatByOtherUserId(user.user_id, other_user_id);
             if (!getRes) {
                 return res.status(200).json({
                     success: false,
@@ -336,7 +346,7 @@ app.get('/api/getChatInfo', async (req, res) => {
         }
 
 
-        let chat = await model.getChatById(chat_id);
+        let chat = await ChatsModel.getChatById(chat_id);
         if (!chat) {
             return res.status(400).json({
                 success: false,
@@ -347,15 +357,15 @@ app.get('/api/getChatInfo', async (req, res) => {
         let chat_name = chat.chat_name;
         let is_ls = chat.is_ls;
 
-        if (!await model.getChatMember(chat_id, user.user_id)) {
+        if (!await ChatsModel.getChatMember(chat_id, user.user_id)) {
             return res.status(403).json({
                 success: false,
                 error: 'access denied'
             });
         }
 
-        const messagesReq = model.getMessages(chat_id, last_message_id);
-        const members = await model.getChatMembers(chat_id);
+        const messagesReq = MessagesModel.getMessages(chat_id, last_message_id);
+        const members = await ChatsModel.getChatMembers(chat_id);
 
         let messages = await messagesReq;
 

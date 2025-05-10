@@ -1,46 +1,39 @@
+import dotenv from "dotenv"
+
+dotenv.config();
+
 import {WebSocketServer} from "ws";
-import redis from "redis";
-import * as model from "./db.js"
-import {sendToAllChatMembers, sendToExactMember, getChatParticipants} from "./brokerConnector.js";
-import InnerCommunicationService from "./services/innerCommunicationService.js";
-import tokenService from "./services/tokenService.js";
+import InnerCommunicationService from "../services/innerCommunicationService.js";
+import tokenService from "../services/tokenService.js";
+import MessagesModel from "../Model/MessagesModel.js";
+import ChatsModel from "../Model/ChatsModel.js";
+import {ChatDecorator} from "./decorators/ChatDecorator.js";
+import MemberDecorator from "./decorators/MemberDecorator.js";
+import {ChatTextDecorator} from "./decorators/ChatTextDecorator.js";
+import MessageAccessDecorator from "./decorators/MessageAccessDecorator.js";
+import WebsocketDecorator from "./library/WebsocketDecorator.js";
+import websocketResponseDTO from "./library/websocketResponseDTO.js";
+import CacheConnector from "./library/OnlineCacheConnector.js";
+import onlineCacheConnector from "./library/OnlineCacheConnector.js";
+import RedisBrokerConnector from "./library/brokers/RedisBrokerConnector.js";
 
 
-const redisSubscriber = redis.createClient();
+const websocket_instance = Number.parseInt(process.argv[2]) - 1;
+let port = 8080 + websocket_instance;
+console.log("RUNNING ON PORT", port)
 
-await redisSubscriber.connect();
+await onlineCacheConnector.clearOnlineCache(websocket_instance);
+
+const brokerConnector = RedisBrokerConnector;
+await brokerConnector.initPublisher();
 
 await setupRedisSubscriptions();
 
 const clients = new Map();
 
 
-const wss = new WebSocketServer({port: 8080});
+const wss = new WebSocketServer({port: port});
 
-function websocketResponseDTO(msg, success, payload, error, error_field) {
-    let resp = {
-        type: msg.type + "Resp",
-        success: success,
-    };
-
-    if (msg.localCode) {
-        resp["localCode"] = msg.localCode;
-    }
-
-    if (error) {
-        resp["error"] = error;
-    }
-
-    if (error_field) {
-        resp["error_field"] = error_field;
-    }
-
-    if (payload) {
-        resp["data"] = payload;
-    }
-
-    return resp;
-}
 
 class WebsocketController {
 
@@ -67,7 +60,7 @@ class WebsocketController {
 
 
     async createMessage(ws, user_id, msg) {
-        let message = await model.createMessage(msg.chat.chat_id, user_id, msg.data.text);
+        let message = await MessagesModel.createMessage(msg.chat.chat_id, user_id, msg.data.text);
 
         if (message && message.message_id) {
 
@@ -78,7 +71,7 @@ class WebsocketController {
                 nickname = userProfileResp.data.data.profiles[0].nickname;
             }
 
-            await sendToAllChatMembers({
+            await brokerConnector.sendToAllChatMembers({
                 type: "sendMessage",
                 success: true,
                 data: {
@@ -112,9 +105,9 @@ class WebsocketController {
             return;
         }
 
-        let updateReq = await model.updateMessage(msg.data.chat_id, message.message_id, msg.data.text);
+        let updateReq = await MessagesModel.updateMessage(msg.data.chat_id, message.message_id, msg.data.text);
         if (updateReq) {
-            await sendToAllChatMembers({
+            await brokerConnector.sendToAllChatMembers({
                 type: "updateMessage",
                 success: true,
                 data: response
@@ -126,9 +119,9 @@ class WebsocketController {
     }
 
     async deleteMessage(ws, user_id, msg) {
-        let deleteMessageReq = await model.deleteMessage(msg.data.chat_id, msg.data.message_id)
+        let deleteMessageReq = await MessagesModel.deleteMessage(msg.data.chat_id, msg.data.message_id)
         if (deleteMessageReq) {
-            await sendToAllChatMembers({
+            await brokerConnector.sendToAllChatMembers({
                 type: "deleteMessage",
                 success: true,
                 data: {
@@ -142,12 +135,12 @@ class WebsocketController {
     }
 
     async joinChatByLink(ws, user_id, msg) {
-        let joinRes = await model.joinChatByInviteLink(user_id, msg.data.link);
+        let joinRes = await ChatsModel.joinChatByInviteLink(user_id, msg.data.link);
         if (joinRes.error) {
             this.send(websocketResponseDTO(msg, false, {}, "Unknown_error"))
         } else if (joinRes.joined) {
-            let chat = await model.getChatById(joinRes.chat_id);
-            await sendToAllChatMembers({
+            let chat = await ChatsModel.getChatById(joinRes.chat_id);
+            await brokerConnector.sendToAllChatMembers({
                 type: "chatMemberJoined",
                 success: true,
                 data: {
@@ -160,10 +153,10 @@ class WebsocketController {
     }
 
     async leaveChat(ws, user_id, msg) {
-        let chatParticipants = await getChatParticipants(msg.chat.chat_id);
-        let leaveChatResult = await model.leaveChat(user_id, msg.data.chat_id);
+        let chatParticipants = await ChatsModel.getChatParticipants(msg.chat.chat_id);
+        let leaveChatResult = await ChatsModel.leaveChat(user_id, msg.data.chat_id);
         if (leaveChatResult) {
-            await sendToAllChatMembers({
+            await brokerConnector.sendToAllChatMembers({
                 type: "chatMemberLeaved",
                 success: true,
                 data: {
@@ -177,15 +170,15 @@ class WebsocketController {
     }
 
     async kickFromChat(ws, user_id, msg) {
-        let chatParticipants = await getChatParticipants(msg.chat.chat_id);
+        let chatParticipants = await ChatsModel.getChatParticipants(msg.chat.chat_id);
         if (msg.user_id === user_id) {
             this.send(websocketResponseDTO(msg, false, {}, "Self_kick_error"))
             return;
         }
 
-        let kickResult = await model.kickFromChat(msg.data.user_id, msg.data.chat_id);
+        let kickResult = await ChatsModel.kickFromChat(msg.data.user_id, msg.data.chat_id);
         if (kickResult) {
-            await sendToAllChatMembers({
+            await brokerConnector.sendToAllChatMembers({
                 type: "chatMemberLeaved",
                 success: true,
                 data: {
@@ -200,7 +193,7 @@ class WebsocketController {
     }
 
     async getInviteLink(ws, user_id, msg) {
-        let inviteLink = await model.getOrCreateInvitationLink(msg.chat_id, user_id);
+        let inviteLink = await ChatsModel.getOrCreateInvitationLink(msg.chat_id, user_id);
         if (!inviteLink) {
             this.send(websocketResponseDTO(msg, false, "Unknown_error"))
             return;
@@ -213,18 +206,18 @@ class WebsocketController {
         let {chat_name, is_ls, other_user_id, text} = msg.data;
         if (other_user_id) {
 
-            let otherUserResponse = await InnerCommunicationService.get('/api/doesUserExist?user_id='+user_id, 8002);
+            let otherUserResponse = await InnerCommunicationService.get('/api/doesUserExist?user_id=' + user_id, 8002);
             if (otherUserResponse.status !== 200 || !otherUserResponse.data.success || !otherUserResponse.data.data.exist) {
                 this.send(websocketResponseDTO(msg, false, {}, "User_not_exist"))
                 return;
             }
 
-            if (await model.getChatByOtherUserId(user_id, other_user_id)) {
+            if (await ChatsModel.getChatByOtherUserId(user_id, other_user_id)) {
                 this.send(websocketResponseDTO(msg, false, {}, "Chat_already_exists"));
                 return;
             }
 
-            let privateChatRes = await model.createPrivateChat(user_id, other_user_id)
+            let privateChatRes = await ChatsModel.createPrivateChat(user_id, other_user_id)
             if (privateChatRes) {
 
                 let userProfileResp = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id, other_user_id]))}`, 8001)
@@ -244,7 +237,7 @@ class WebsocketController {
                     else if (prof2.user_id === other_user_id) nickname2 = prof2.nickname;
                 }
 
-                let promise1 = sendToExactMember({
+                let promise1 = brokerConnector.sendToExactMember({
                     type: "createChat",
                     success: true,
                     data: {
@@ -255,7 +248,7 @@ class WebsocketController {
                         chat_name: `Чат с ${nickname1}`
                     }
                 }, other_user_id);
-                let promise2 = sendToExactMember({
+                let promise2 = brokerConnector.sendToExactMember({
                     type: "createChat",
                     success: true,
                     data: {
@@ -289,9 +282,9 @@ class WebsocketController {
                 return;
             }
 
-            let result = await model.createGroupChat(user_id, chat_name);
+            let result = await ChatsModel.createGroupChat(user_id, chat_name);
             if (result) {
-                await sendToAllChatMembers({
+                await brokerConnector.sendToAllChatMembers({
                     type: "createChat",
                     success: true,
                     data: {
@@ -326,9 +319,9 @@ class WebsocketController {
             return;
         }
 
-        let result = await model.updateGroupChat(msg.chat.chat_id, newchat_name);
+        let result = await ChatsModel.updateGroupChat(msg.chat.chat_id, newchat_name);
         if (result) {
-            await sendToAllChatMembers({
+            await brokerConnector.sendToAllChatMembers({
                 type: "updateChat",
                 success: true,
                 data: {
@@ -350,10 +343,10 @@ class WebsocketController {
             return;
         }
 
-        let chatParticipants = await getChatParticipants(msg.chat.chat_id);
-        let result = await model.deleteGroupChat(msg.chat.chat_id, user_id);
+        let chatParticipants = await ChatsModel.getChatParticipants(msg.chat.chat_id);
+        let result = await ChatsModel.deleteGroupChat(msg.chat.chat_id, user_id);
         if (result) {
-            await sendToAllChatMembers({
+            await brokerConnector.sendToAllChatMembers({
                 type: "deleteChat",
                 success: true,
                 data: {
@@ -371,8 +364,8 @@ class WebsocketController {
             this.send(websocketResponseDTO(msg, false, {}, "Permission_denied"))
             return;
         }
-        await model.clearMessages(msg.chat.chat_id);
-        await sendToAllChatMembers({
+        await MessagesModel.clearMessages(msg.chat.chat_id);
+        await brokerConnector.sendToAllChatMembers({
             type: "clearChatHistory",
             success: true,
             data: {
@@ -388,7 +381,7 @@ class WebsocketController {
         }
 
         let {other_user_id, block_state} = msg.data;
-        let otherMember = await model.getChatMember(msg.chat.chat_id, other_user_id);
+        let otherMember = await ChatsModel.getChatMember(msg.chat.chat_id, other_user_id);
 
         if (!otherMember) {
             return this.send(websocketResponseDTO(msg, false, {}, "User_not_found"))
@@ -399,13 +392,13 @@ class WebsocketController {
             return;
         }
 
-        let blockUnblockResult = await model.blockUnblockUserInChat(msg.chat.chat_id, other_user_id, block_state);
+        let blockUnblockResult = await ChatsModel.blockUnblockUserInChat(msg.chat.chat_id, other_user_id, block_state);
         if (!blockUnblockResult) {
             this.send(websocketResponseDTO(msg, false, "Unknown_error"))
             return;
         }
 
-        await sendToAllChatMembers({
+        await brokerConnector.sendToAllChatMembers({
             type: "blockUnblockUserInChat",
             success: true,
             data: {
@@ -418,108 +411,12 @@ class WebsocketController {
 
 }
 
-class WebsocketDecorator {
-    _callback;
 
-    constructor(callback) {
-        this._callback = callback;
-    }
-
-    async call(ws, user_id, msg) {
-        if (typeof (this._callback) === "function") {
-            await this._callback(ws, user_id, msg);
-        } else {
-            await this._callback.callback(ws, user_id, msg)
-        }
-    }
-
-    async callback(ws, user_id, msg) {
-
-    }
-}
-
-class ChatDecorator extends WebsocketDecorator {
-
-    async callback(ws, user_id, msg) {
-        let chat_id = msg.data.chat_id;
-        let chat = await model.getChatById(chat_id);
-
-        if (!chat) {
-            ws.send(JSON.stringify({type: msg.type + "Resp", success: false, error: "Chat_not_exist"}));
-        } else {
-            msg.chat = chat;
-            await this.call(ws, user_id, msg)
-        }
-    }
-}
-
-class MemberDecorator extends WebsocketDecorator {
-
-    constructor(callback, adminRequired, mustBeNotBlocked) {
-        super(callback);
-
-        this.adminRequired = adminRequired;
-        this.mustBeNotBlocked = mustBeNotBlocked;
-    }
-
-    async callback(ws, user_id, msg) {
-
-        let member = await model.getChatMember(msg.data.chat_id, user_id);
-        if (!member || !member.is_admin && this.adminRequired || member.is_kicked || this.mustBeNotBlocked && member.is_blocked) {
-            ws.send(JSON.stringify({type: msg.type + "Resp", success: false, error: "Permission_denied"}));
-            return;
-        }
-
-        msg.member = member;
-
-        await this.call(ws, user_id, msg);
-    }
-
-}
-
-class ChatTextDecorator extends WebsocketDecorator {
-    async callback(ws, user_id, msg) {
-
-        let text = msg.data.text;
-        if (!text || text.length > 256) {
-            ws.send(JSON.stringify({type: msg.type + "Resp", success: false, error: "Message_len"}));
-            return;
-        }
-
-        await this.call(ws, user_id, msg);
-    }
-}
-
-class MessageAccessDecorator extends WebsocketDecorator {
-
-    constructor(callback, isAdminActionAvailable) {
-        super(callback);
-
-        this.isAdminActionAvailable = isAdminActionAvailable;
-    }
-
-    async callback(ws, user_id, msg) {
-
-        let message = await model.getMessageById(msg.data.chat_id, msg.data.message_id);
-        if (!message) {
-            ws.send(JSON.stringify({type: msg.type + "Resp", success: false, error: "Message_not_exist"}));
-            return;
-        }
-
-        if (message.user_id !== user_id && (!this.isAdminActionAvailable || this.isAdminActionAvailable && !msg.member.is_admin)) {
-            ws.send(JSON.stringify({type: msg.type + "Resp", success: false, error: "Permission_denied"}));
-            return;
-        }
-
-        msg.message = message;
-
-        await this.call(ws, user_id, msg);
-    }
-}
-
+let localConnectionsCounter = 0;
 
 wss.on('connection', (ws, req) => {
 
+    ws.localConnection = ++localConnectionsCounter;
     console.log(`Connection established: awaiting accessToken`);
 
     let controller = new WebsocketController();
@@ -611,6 +508,7 @@ wss.on('connection', (ws, req) => {
                     clients.set(userData.user_id, []);
                 }
 
+
                 currentConnection = {
                     ws: ws,
                     user_id: userData.user_id,
@@ -618,7 +516,7 @@ wss.on('connection', (ws, req) => {
                 };
 
                 clients.get(userData.user_id).push(currentConnection);
-
+                await onlineCacheConnector.addUserToWs(websocket_instance, userData.user_id);
                 return;
 
             }
@@ -630,19 +528,21 @@ wss.on('connection', (ws, req) => {
     });
 
 
-    ws.on('close', () => {
+    ws.on('close', async () => {
 
         if (disconnectTimeout != null) clearTimeout(disconnectTimeout);
         if (currentConnection !== null) {
             console.log("Close event received for user: " + currentConnection.user_id);
             const userWs = clients.get(currentConnection.user_id);
             if (userWs) {
-                const index = userWs.indexOf(ws);
+                const index = userWs.findIndex(v => v.ws.localConnection === ws.localConnection);
                 if (index > -1) {
                     userWs.splice(index, 1);
                 }
                 if (userWs.length === 0) {
                     clients.delete(currentConnection.user_id);
+                    console.log("LAST USER CONNECTION TO CURRENT WS!")
+                    await CacheConnector.fullyRemoveUserFromWs(websocket_instance, currentConnection.user_id);
                 }
             }
             console.log(`User disconnected: ${currentConnection.user_id}`);
@@ -655,34 +555,34 @@ wss.on('connection', (ws, req) => {
 });
 
 async function setupRedisSubscriptions() {
+    await brokerConnector.initSubscriber();
 
-
-    // In a real app, you might want dynamic subscription management
-    // For this example, we'll subscribe to a pattern that matches all user channels
-    await redisSubscriber.pSubscribe('user:*', (message, channel) => {
+    await brokerConnector.brokerSubscribe('ws' + websocket_instance, (message, channel) => {
         try {
             const msg = JSON.parse(message);
-            const recipientId = msg.recipient_id;
+            const recipientIds = msg.recipient_ids;
 
-            console.log(`Processing message for ${recipientId} from channel ${channel}`);
+            for (let recipientId of recipientIds) {
 
-            if (clients.has(recipientId)) {
-                const recipientConnections = clients.get(recipientId);
+                console.log(`Processing message for ${recipientId} from channel ${channel}`);
+                if (clients.has(recipientId)) {
+                    const recipientConnections = clients.get(recipientId);
 
-                for (const userConnection of recipientConnections) {
-                    let {accessToken, ws, user_id} = userConnection;
+                    for (const userConnection of recipientConnections) {
+                        let {accessToken, ws, user_id} = userConnection;
 
-                    if (userConnection.ws === null) continue;
+                        if (userConnection.ws === null) continue;
 
-                    if (!tokenService.validateAccessToken(accessToken)){
-                        userConnection.ws = null;
-                        console.log(`Disconnecting user ${user_id}: not authorized`);
-                        ws.close(4001, "Not_authorized");
-                        continue;
-                    }
+                        if (!tokenService.validateAccessToken(accessToken)) {
+                            userConnection.ws = null;
+                            console.log(`Disconnecting user ${user_id}: not authorized`);
+                            ws.close(4001, "Not_authorized");
+                            continue;
+                        }
 
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(message);
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send(message);
+                        }
                     }
                 }
             }
@@ -695,9 +595,6 @@ async function setupRedisSubscriptions() {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
     console.log('SIGTERM received. Shutting down gracefully...');
-
-    await redisPublisher.quit();
-    await redisSubscriber.quit();
     process.exit(0);
 });
 
