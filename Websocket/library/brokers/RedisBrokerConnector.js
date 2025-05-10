@@ -7,12 +7,16 @@ let redisSubscriber = null;
 
 class RedisBrokerConnector {
     async initSubscriber() {
+        if (redisSubscriber != null) return;
+
         redisSubscriber = redis.createClient();
 
         await redisSubscriber.connect();
     }
 
     async initPublisher() {
+        if (redisPublisher != null) return;
+
         redisPublisher = redis.createClient();
         await redisPublisher.connect();
     }

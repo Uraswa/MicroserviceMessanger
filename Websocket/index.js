@@ -134,24 +134,6 @@ class WebsocketController {
         }
     }
 
-    async joinChatByLink(ws, user_id, msg) {
-        let joinRes = await ChatsModel.joinChatByInviteLink(user_id, msg.data.link);
-        if (joinRes.error) {
-            this.send(websocketResponseDTO(msg, false, {}, "Unknown_error"))
-        } else if (joinRes.joined) {
-            let chat = await ChatsModel.getChatById(joinRes.chat_id);
-            await brokerConnector.sendToAllChatMembers({
-                type: "chatMemberJoined",
-                success: true,
-                data: {
-                    chat_id: chat.chat_id,
-                    user_id: user_id
-                }
-            }, msg.chat.chat_id, user_id, false);
-            this.send(websocketResponseDTO(msg, true, {chat_id: chat.chat_id}))
-        }
-    }
-
     async leaveChat(ws, user_id, msg) {
         let chatParticipants = await ChatsModel.getChatParticipants(msg.chat.chat_id);
         let leaveChatResult = await ChatsModel.leaveChat(user_id, msg.data.chat_id);
@@ -190,16 +172,6 @@ class WebsocketController {
         }
 
         this.send(websocketResponseDTO(msg, false, {}, "Unknown_error"))
-    }
-
-    async getInviteLink(ws, user_id, msg) {
-        let inviteLink = await ChatsModel.getOrCreateInvitationLink(msg.chat_id, user_id);
-        if (!inviteLink) {
-            this.send(websocketResponseDTO(msg, false, "Unknown_error"))
-            return;
-        }
-
-        this.send(websocketResponseDTO(msg, true, {inviteLink}))
     }
 
     async createChat(ws, user_id, msg) {
@@ -299,7 +271,6 @@ class WebsocketController {
         }
 
     }
-
 
     async updateChat(ws, user_id, msg) {
         let newchat_name = msg.data.chat_name;
@@ -469,11 +440,6 @@ wss.on('connection', (ws, req) => {
         new MemberDecorator(controller.clearChatHistory.bind(controller), false)
     ))
 
-    controller.on('getInviteLink', new ChatDecorator(
-        new MemberDecorator(controller.getInviteLink.bind(controller), false)
-    ))
-
-    controller.on('joinChat', controller.joinChatByLink.bind(controller));
 
     let disconnectTimeout = setTimeout(() => {
         console.log("Access token wasn't received: disconnecting...")

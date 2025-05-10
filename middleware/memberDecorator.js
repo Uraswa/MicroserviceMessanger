@@ -25,6 +25,7 @@ export default (adminRequired, mustBeNotBlocked) => {
         }
 
         req.member = member;
+        req.chat_id = chat_id;
         next();
     }
 }

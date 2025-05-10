@@ -1,5 +1,4 @@
-﻿
-import dotenv from "dotenv"
+﻿import dotenv from "dotenv"
 
 dotenv.config();
 
@@ -11,6 +10,10 @@ import InnerCommunicationService from "./services/innerCommunicationService.js";
 import MessagesModel from "./Model/MessagesModel.js";
 import ChatsModel from "./Model/ChatsModel.js";
 import RedisBrokerConnector from "./Websocket/library/brokers/RedisBrokerConnector.js";
+import ChatsController from "./Controller/ChatsController.js";
+import authMiddleware from "./middleware/auth-middleware.js";
+import chatDecorator from "./middleware/chatDecorator.js";
+import memberDecorator from "./middleware/memberDecorator.js";
 
 
 const app = express()
@@ -18,9 +21,10 @@ app.use(express.json())
 app.use(cookieParser());
 app.use(cors({
     origin: "http://localhost:9000", // или true для любого origin
-  credentials: true, // разрешаем куки и авторизационные заголовки
-  allowedHeaders: ['Content-Type', 'Authorization']
+    credentials: true, // разрешаем куки и авторизационные заголовки
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
+app.use(authMiddleware)
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
 const brokerConnector = RedisBrokerConnector;
@@ -83,7 +87,7 @@ app.get('/api/getChats', async (req, res) => {
 
         for (let chat of chats) {
             let shard = MessagesModel.getShardByIndex(chat.shard_index)
-            if (!shards.has(shard.name)){
+            if (!shards.has(shard.name)) {
                 shards.set(shard.name, []);
             }
 
@@ -94,9 +98,9 @@ app.get('/api/getChats', async (req, res) => {
 
         }
 
-        for (const [shard, chatIds] of shards){
+        for (const [shard, chatIds] of shards) {
             let messages = await MessagesModel.getLastMessagesFromSameShard(chatIds);
-            for (let msg of messages){
+            for (let msg of messages) {
                 let chat = chatsMap[msg.chat_id];
                 chat.last_message_id = msg.message_id;
                 chat.last_message_text = msg.text;
@@ -395,6 +399,12 @@ app.get('/api/getChatInfo', async (req, res) => {
     }
 })
 
+app.post('/api/leaveChat', chatDecorator, memberDecorator(false), ChatsController.leaveChat.bind(ChatsController));
+app.post('/api/kickFromChat', chatDecorator, memberDecorator(true), ChatsController.kickFromChat.bind(ChatsController));
+app.post('/api/updateChat', chatDecorator, memberDecorator(true), ChatsController.updateChat.bind(ChatsController));
+app.post('/api/createChat', ChatsController.createChat.bind(ChatsController))
+app.post('/api/deleteChat', chatDecorator, memberDecorator(false),ChatsController.deleteChat.bind(ChatsController))
+app.post('/api/blockUnblockUserInChat', chatDecorator, memberDecorator(false),ChatsController.blockUnblockUserInChat.bind(ChatsController))
 
 app.listen(8000, () => {
 
@@ -402,5 +412,4 @@ app.listen(8000, () => {
 
 process.on('SIGTERM', async () => {
     console.log('SIGTERM received. Shutting down gracefully...');
-    server.close();
 });
