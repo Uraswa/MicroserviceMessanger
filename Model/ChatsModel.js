@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import pg from 'pg'
-import MessagesModel from "./MessagesModel.js";
+import ApplicationCache from "../Websocket/library/ApplicationCache.js";
 
 const {Pool} = pg;
 
@@ -16,20 +16,8 @@ const pool = new Pool({
 class ChatsModel {
 
     async getChatParticipants(chatId) {
-        try {
-            const query = await pool.query(`SELECT user_id
-                                            FROM chat_member
-                                            WHERE chat_id = $1`, [chatId])
-
-            return query.rows.map(v => v['user_id']);
-
-        } catch (e) {
-
-        }
-    }
-
-    async chooseShard() {
-        return MessagesModel.chooseShard();
+        let members = await this.getChatMembers(chatId);
+        return members.map(v => v['user_id']);
     }
 
     async createPrivateChat(userId1, userId2) {
@@ -37,11 +25,10 @@ class ChatsModel {
         try {
             await client.query('BEGIN');
 
-            let shardIndex = await this.chooseShard();
 
             const chatResult = await client.query(
-                `INSERT INTO chats (chat_name, is_ls, shard_index)
-                 VALUES ('', true, $1) RETURNING chat_id`, [shardIndex]
+                `INSERT INTO chats (chat_name, is_ls)
+                 VALUES ('', true) RETURNING chat_id`
             );
             const chatId = chatResult.rows[0].chat_id;
 
@@ -53,6 +40,16 @@ class ChatsModel {
             );
 
             await client.query('COMMIT');
+
+            await ApplicationCache.addChatMembers(chatId, [
+                {
+                    user_id: userId1,
+                },
+                {
+                    user_id: userId2
+                }
+            ])
+
             return {chat_id: chatId, is_ls: true};
         } catch (err) {
             await client.query('ROLLBACK');
@@ -67,12 +64,10 @@ class ChatsModel {
         try {
             await client.query('BEGIN');
 
-            let shardIndex = await this.chooseShard();
-
             const chatResult = await client.query(
-                `INSERT INTO chats (chat_name, is_ls, shard_index)
-                 VALUES ($1, false, $2) RETURNING chat_id`,
-                [chatName, shardIndex]
+                `INSERT INTO chats (chat_name, is_ls)
+                 VALUES ($1, false) RETURNING chat_id`,
+                [chatName]
             );
             const chatId = chatResult.rows[0].chat_id;
 
@@ -82,16 +77,16 @@ class ChatsModel {
                 [chatId, creatorId]
             );
 
-            if (initialMembers.length > 0) {
-                const values = initialMembers.map(userId =>
-                    `(${chatId}, ${userId}, ${creatorId}, false)`).join(',');
-                await client.query(
-                    `INSERT INTO chat_member (chat_id, user_id, invited_by, is_admin)
-                     VALUES ${values}`
-                );
-            }
 
             await client.query('COMMIT');
+
+            await ApplicationCache.addChatMembers(chatId, [
+                {
+                    user_id: creatorId,
+                    is_admin: true
+                }
+            ])
+
             return {chat_id: chatId, is_ls: false};
         } catch (err) {
             await client.query('ROLLBACK');
@@ -137,7 +132,13 @@ class ChatsModel {
             )
 
             await client.query('COMMIT');
-            return !!leaveResult.rows[0]
+
+            let success = !!leaveResult.rows[0];
+            if (success) {
+                await ApplicationCache.removeUserAsChatMember(chatId, userId)
+            }
+
+            return success;
         } catch (err) {
             await client.query('ROLLBACK');
             throw err;
@@ -160,7 +161,13 @@ class ChatsModel {
             )
 
             await client.query('COMMIT');
-            return !!leaveResult.rows[0]
+
+            let success = !!leaveResult.rows[0]
+            if (success) {
+                await ApplicationCache.removeUserAsChatMember(chatId, userId)
+            }
+
+            return success;
         } catch (err) {
             await client.query('ROLLBACK');
             throw err;
@@ -206,7 +213,14 @@ class ChatsModel {
                 [chat_id, userId, inviter_id]
             );
 
+
             await client.query('COMMIT');
+
+
+            await ApplicationCache.addUserAsChatMember(chat_id, {
+                user_id: userId
+            }, await this._getMembersCount(chat_id) - 1)
+
             return {chat_id, joined: true};
         } catch (err) {
             await client.query('ROLLBACK');
@@ -214,6 +228,16 @@ class ChatsModel {
         } finally {
             client.release();
         }
+    }
+
+    async _getMembersCount(chat_id) {
+        let query = `SELECT COUNT(*) as cnt FROM chat_member WHERE chat_id = $1`;
+        let result = await pool.query(query, [chat_id]);
+
+        let firstRow = result.rows[0];
+        if (!firstRow) return -1;
+
+        return firstRow.cnt;
     }
 
     async deleteGroupChat(chatId) {
@@ -229,6 +253,9 @@ class ChatsModel {
             );
 
             await client.query('COMMIT');
+
+            await ApplicationCache.clearChatMembersCache("chat_members_" + chatId)
+
             return result.rows[0];
         } catch (err) {
             await client.query('ROLLBACK');
@@ -266,7 +293,6 @@ class ChatsModel {
             SELECT c.chat_id,
                    c.chat_id,
                    c.chat_name,
-                   c.shard_index,
                    c.is_ls,
                    (CASE
                         WHEN c.is_ls = true
@@ -302,7 +328,7 @@ WHERE cm.user_id =
     }
 
     async getChatById(chatId) {
-        const query = `SELECT chat_id, chat_name, is_ls, shard_index, created_time
+        const query = `SELECT chat_id, chat_name, is_ls, created_time
                        FROM chats
                        WHERE chat_id = $1`;
         const values = [chatId];
@@ -323,6 +349,10 @@ WHERE cm.user_id =
     }
 
     async getChatMember(chat_id, user_id, must_be_not_kicked = true) {
+        let cacheResponse = await ApplicationCache.getChatMember(chat_id, user_id, false);
+        if (cacheResponse === false) return undefined;
+        if (cacheResponse !== false) return cacheResponse;
+
         const query = `
             SELECT *
             FROM chat_member
@@ -336,11 +366,23 @@ WHERE cm.user_id =
     async blockUnblockUserInChat(chat_id, other_user_id, block_state) {
         const query = "UPDATE chat_member SET is_blocked = $1 WHERE chat_id = $2 and user_id = $3 RETURNING *";
         const result = await pool.query(query, [block_state, chat_id, other_user_id]);
+
+        await ApplicationCache.editUserChatMember(chat_id, other_user_id, {
+            user_id: other_user_id,
+            is_blocked: block_state
+        })
+
         return result.rows[0];
     }
 
 
     async getChatMembers(chat_id, is_kicked = false) {
+        let cachedMembers = await ApplicationCache.getChatMembers(chat_id, false);
+
+        if (cachedMembers === null) return [];
+        if (cachedMembers !== false) return cachedMembers;
+
+
         const query = `
             SELECT user_id, is_admin, is_blocked
             FROM chat_member
@@ -348,7 +390,12 @@ WHERE cm.user_id =
               and is_kicked = $2
         `
 
-        const result = await pool.query(query, [chat_id, is_kicked]);
+        const result = await pool.query(query, [chat_id, false]);
+
+        if (result.rows.length > 0) {
+            await ApplicationCache.addChatMembers(chat_id, result.rows);
+        }
+
         return result.rows;
     }
 }

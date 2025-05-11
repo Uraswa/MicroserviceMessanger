@@ -1,5 +1,5 @@
-import ChatsModel from "../../Model/ChatsModel.js";
 import WebsocketDecorator from "../library/WebsocketDecorator.js";
+import ApplicationCache from "../library/ApplicationCache.js";
 
 export default class MemberDecorator extends WebsocketDecorator {
 
@@ -12,7 +12,7 @@ export default class MemberDecorator extends WebsocketDecorator {
 
     async callback(ws, user_id, msg) {
 
-        let member = await ChatsModel.getChatMember(msg.data.chat_id, user_id);
+        let member = await ApplicationCache.getChatMember(msg.data.chat_id, user_id);
         if (!member || !member.is_admin && this.adminRequired || member.is_kicked || this.mustBeNotBlocked && member.is_blocked) {
             ws.send(JSON.stringify({type: msg.type + "Resp", success: false, error: "Permission_denied"}));
             return;

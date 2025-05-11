@@ -7,6 +7,16 @@ await brokerConnector.initPublisher();
 
 class ChatsController {
 
+    async getProfile(user_id) {
+        //let response = await axios.get(`http://localhost:8001/api/getProfile?user_id=${user_id}`);
+        let response = await InnerCommunicationService.get(`/api/getProfile?user_id=${user_id}`, 8001);
+        if (response.status === 200) {
+            return response.data.data;
+        } else {
+            return undefined;
+        }
+    }
+
     async leaveChat(req, res) {
         try {
             const {chat_id} = req;
@@ -73,11 +83,358 @@ class ChatsController {
         })
     }
 
+    async getChatMember(req, res) {
+        let user = req.user;
+        try {
+            let {chat_id, user_id} = req.query;
+            if (!user.is_server) {
+                return res.status(200).json({
+                    success: false,
+                    error: "Permission_denied"
+                })
+            }
+
+            let member = await ChatsModel.getChatMember(chat_id, user_id);
+            if (member) {
+                return res.status(200).json({
+                    success: true,
+                    data: {
+                        member
+                    }
+                })
+            }
+
+        } catch (e) {
+            console.log(e);
+        }
+
+        return res.status(200).json({
+            success: false,
+            error: "Unknown_error"
+        })
+    }
+
+    async getChatMembers(req, res) {
+        let user = req.user;
+        try {
+            let {chat_id} = req.query;
+
+            if (!user.is_server) {
+                return res.status(200).json({
+                    success: false,
+                    error: "Permission_denied"
+                })
+            }
+
+            let members = await ChatsModel.getChatMembers(chat_id);
+            if (members) {
+                return res.status(200).json({
+                    success: true,
+                    data: {
+                        members
+                    }
+                })
+            }
+
+        } catch (e) {
+            console.log(e);
+        }
+
+        return res.status(200).json({
+            success: false,
+            error: "Unknown_error"
+        })
+    }
+
+    async getChatById(req, res) {
+        let user = req.user;
+        try {
+            let {chat_id} = req.query;
+
+            if (!user.is_server) {
+                return res.status(200).json({
+                    success: false,
+                    error: "Permission_denied"
+                })
+            }
+
+            let chat = await ChatsModel.getChatById(chat_id);
+            if (chat) {
+                return res.status(200).json({
+                    success: true,
+                    data: chat
+                })
+            }
+
+        } catch (e) {
+            console.log(e);
+        }
+
+        return res.status(200).json({
+            success: false,
+            error: "Unknown_error"
+        })
+    }
+
+    async getChatInfo(req, res) {
+        const user = req.user;
+        try {
+            let {chat_id, last_message_id = undefined, other_user_id} = req.query;
+
+
+            if (!chat_id && !other_user_id) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'chat_id or other_user_id is required'
+                });
+            }
+
+            if (other_user_id) {
+                let getRes = await ChatsModel.getChatByOtherUserId(user.user_id, other_user_id);
+                if (!getRes) {
+                    return res.status(200).json({
+                        success: false,
+                        error: 'chat_not_found'
+                    });
+                }
+                chat_id = getRes.chat_id;
+            }
+
+
+            let chat = await ChatsModel.getChatById(chat_id);
+            if (!chat) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'chat_not_exists'
+                });
+            }
+
+            let chat_name = chat.chat_name;
+            let is_ls = chat.is_ls;
+
+            if (!await ChatsModel.getChatMember(chat_id, user.user_id)) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'access denied'
+                });
+            }
+
+            const messagesReq = InnerCommunicationService.get("/api/getMessages?chat_id=" + chat_id, 8003);
+            const members = await ChatsModel.getChatMembers(chat_id);
+
+            let messagesResponse = await messagesReq;
+            let messages = [];
+
+            if (messagesResponse.status === 200 && !messagesResponse.data.success) {
+                messages = messagesResponse.data.data;
+            }
+
+            let userIds = new Set();
+            for (let message of messages) {
+                userIds.add(message.user_id);
+            }
+
+            for (let member of members) {
+                userIds.add(member.user_id)
+            }
+
+            let profiles = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(userIds))}`, 8001)
+
+            let userProfiles = profiles.data.data.profiles;
+
+            res.status(200).json({
+                success: true,
+                data: {messages, userProfiles, members, chat_name, is_ls, chat_id}
+            });
+        } catch (e) {
+            console.log(e)
+        }
+
+        return res.status(200).json({
+            success: false,
+            error: "Unknown_error"
+        })
+    }
+
+    async joinChat(req, res) {
+        const user = req.user;
+        try {
+            let chat_id = await ChatsModel.getChatIdByInviteLink(req.query.link);
+
+            if (!chat_id) {
+                return res.status(404).json({
+                    success: false,
+                    error: "Чат не найден"
+                });
+            }
+
+            let chat = await ChatsModel.getChatById(chat_id);
+            if (!chat) {
+                return res.status(404).json({
+                    success: false,
+                    error: "Чат не найден"
+                });
+            }
+
+            let member = await ChatsModel.getChatMember(chat_id, user.user_id, false);
+            if (member) {
+                return res.status(200).json({
+                    success: true
+                });
+            }
+
+            let joinRes = await ChatsModel.joinChatByInviteLink(user.user_id, req.query.link);
+            if (joinRes.error) {
+                return res.status(500).json({
+                    success: false,
+                    error: "Чат не найден"
+                });
+            } else if (joinRes.joined) {
+                let profile = await this.getProfile(user.user_id);
+
+                if (!profile) {
+                    return res.status(500).json({
+                        success: false,
+                        error: "Произошла ошибка"
+                    });
+                }
+
+                await brokerConnector.sendToAllChatMembers({
+                    type: "chatMemberJoined",
+                    success: true,
+                    data: {
+                        chat_id: chat.chat_id,
+                        user_id: user.user_id,
+                        nickname: profile.nickname
+                    }
+                }, chat.chat_id, user.user_id, false);
+                return res.status(200).json({
+                    success: true
+                });
+            }
+        } catch (e) {
+            console.log(e)
+        }
+
+        return res.status(200).json({
+            success: false,
+            error: "Unknown_error"
+        })
+    }
+
+    async getChats(req, res) {
+        const user = req.user;
+        try {
+            let filters = {}
+            if (req.query.filters) {
+                filters = JSON.parse(req.query.filters)
+            }
+
+            const chats = await ChatsModel.getChats(user.user_id, filters);
+
+            let chatIds = [];
+            let chatsMap = new Map();
+            let usersIds = new Set();
+
+            for (let chat of chats) {
+                let chat_id = Number.parseInt(chat.chat_id);
+                chatIds.push(chat_id);
+                chat.last_message_timestamp = chat.created_time;
+                chatsMap.set(chat_id, chat);
+            }
+
+            let messagesResponse = await InnerCommunicationService.post('/api/getLastMessageByChat', {
+                chatsIds: chatIds
+            }, 8003);
+
+            if (messagesResponse.status === 200 && messagesResponse.data.success) {
+                let messages = messagesResponse.data.data;
+
+                for (let msg of messages) {
+                    let chat = chatsMap.get(msg.chat_id);
+                    if (!chat) continue;
+
+                    chat.last_message_id = msg.message_id;
+                    chat.last_message_text = msg.text;
+                    chat.last_message_user_id = msg.user_id;
+                    chat.last_message_timestamp = msg.timestamp;
+
+                    if (chat.last_message_user_id) usersIds.add(chat.last_message_user_id);
+                    if (chat.other_user_id) usersIds.add(chat.other_user_id);
+                }
+
+            }
+
+            let userProfiles = [];
+            if (usersIds.size) {
+                let result = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(usersIds))}`, 8001)
+                userProfiles = result.data.data.profiles;
+            }
+
+            res.status(200).json({
+                success: true,
+                data: {chats, userProfiles}
+            });
+        } catch (e) {
+            console.log(e)
+        }
+
+        return res.status(200).json({
+            success: false,
+            error: "Unknown_error"
+        })
+    }
+
+    async getOrCreateInvitationLink(req, res) {
+        const user = req.user;
+        try {
+            const {chat_id} = req.query;
+            if (!chat_id) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'chat_id is required'
+                });
+            }
+
+            if (!await ChatsModel.getChatMember(chat_id, user.user_id)) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'access denied'
+                });
+            }
+
+            let inviteLink = await ChatsModel.getOrCreateInvitationLink(chat_id, user.user_id);
+
+            if (!inviteLink) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Unknown_error'
+                });
+            }
+
+            inviteLink = "http://localhost:9000/joinChat/" + inviteLink;
+
+            res.status(200).json({
+                success: true,
+                data: {
+                    link: inviteLink
+                }
+            });
+        } catch (e) {
+            console.log(e)
+        }
+
+        return res.status(200).json({
+            success: false,
+            error: "Unknown_error"
+        })
+    }
+
     async createChat(req, res) {
         try {
             const user_id = req.user.user_id;
 
-            let {chat_name, is_ls, other_user_id, text} = req.body;
+            let {chat_name, other_user_id} = req.body;
             if (other_user_id) {
 
                 let otherUserResponse = await InnerCommunicationService.get('/api/doesUserExist?user_id=' + other_user_id, 8002);
@@ -146,15 +503,6 @@ class ChatsController {
 
                     await promise1;
                     await promise2;
-
-                    //TODO!!!!
-                    // await this.route(ws, user_id, {
-                    //     type: "sendMessage",
-                    //     data: {
-                    //         chat_id: privateChatRes.chat_id,
-                    //         text: text
-                    //     }
-                    // })
 
                     return res.status(200).json(response);
 
@@ -247,6 +595,7 @@ class ChatsController {
 
     async deleteChat(req, res) {
 
+        //TODO при удалении чата прокинуть ивент в брокер
         try {
             let chat = req.chat;
             let user_id = req.user.user_id;

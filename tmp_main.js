@@ -3,4 +3,4 @@
 dotenv.config();
 
 import "./api_chat_service.js"
-import "./Websocket/index.js"
+import "./Websocket/MessagingNotificationService.js"

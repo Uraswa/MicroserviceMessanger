@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon api_chat_service.js",
-    "dev-1": "nodemon ./Websocket/index.js 1",
-    "dev-2": "nodemon ./Websocket/index.js 2",
-    "dev-3": "nodemon ./Websocket/index.js 3",
-    "dev-4": "nodemon ./Websocket/index.js 4"
+    "dev-1": "nodemon Websocket/MessagingNotificationService.js 1",
+    "dev-2": "nodemon Websocket/MessagingNotificationService.js 2",
+    "dev-3": "nodemon Websocket/MessagingNotificationService.js 3",
+    "dev-4": "nodemon Websocket/MessagingNotificationService.js 4"
   },
   "keywords": [],
   "author": "",

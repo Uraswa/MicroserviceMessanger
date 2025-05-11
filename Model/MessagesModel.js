@@ -1,4 +1,5 @@
 import pg from 'pg'
+import ChatToShardModel from "./ChatToShardModel.js";
 
 const {Pool} = pg;
 
@@ -68,19 +69,19 @@ class MessagesModel {
 
     async getChatShardIndex(chatId) {
         const query = `SELECT shard_index
-                       FROM chats
+                       FROM chats_to_shard
                        WHERE chat_id = $1`;
         const values = [chatId];
         const result = await pool.query(query, values);
 
-        if (!result.rows[0]) throw new Error("Shard_not_found")
+        if (!result.rows[0]) {
+            const shardIndex = this.chooseShard();
+            const insertShardInfoQuery = `INSERT INTO chats_to_shard (chat_id, shard_index) VALUES ($1, $2)`;
+            const insertShardInfoRes = await pool.query(insertShardInfoQuery, [chatId, shardIndex]);
+            return shardIndex;
+        }
 
         return result.rows[0].shard_index;
-    }
-
-
-    getShardByIndex(shard_index) {
-        return SHARDS[shard_index];
     }
 
     async chooseShard() {
@@ -171,42 +172,28 @@ class MessagesModel {
         return result.rows[0];
     }
 
-    async getLastMessagesFromSameShard(chatIds) {
-        const shard = await this.getShard(chatIds[0]);
+    async getLastMessagesByChat(chatIds) {
 
-        if (chatIds.length === 1) {
-            const query = `
-                SELECT m.chat_id, m.text, m.user_id, m.timestamp, m.message_id
-                FROM messages m
-                WHERE m.chat_id = $1
-                ORDER BY m.timestamp DESC LIMIT 1
-            `;
-            let messages = await shard.pool.query(query, [chatIds[0]]);
-            return messages.rows;
-        } else if (chatIds.length === 0) {
-            return [];
-        } else {
+        let gropedByShard = await ChatToShardModel.getChatsShards(chatIds);
+        let result = [];
 
-            let chatIdsJoined = '';
-            let i = 0;
-            for (let chatId of chatIds) {
-                chatIdsJoined += Number.parseInt(chatId).toString();
-                chatIdsJoined += i === chatIds.length - 1 ? '' : ', '
-                i += 1
-            }
+        for (let shardGroup of gropedByShard) {
+            let shard = await this.getShard(shardGroup.shard_index);
 
             let query = `SELECT DISTINCT
                          ON (m.chat_id)
                              m.chat_id, m.text, m.user_id, m.timestamp, m.message_id
                          FROM messages m
-                         WHERE m.chat_id IN (${chatIdsJoined})
+                         WHERE m.chat_id IN (${shardGroup.chats})
                          ORDER BY m.chat_id, m.timestamp DESC;`
 
             let messages = await shard.pool.query(query, []);
-            return messages.rows;
-
+            for (let msg of messages) {
+                result.push(msg);
+            }
         }
 
+        return result;
     }
 
     async getMessages(chat_id, last_message_id) {

@@ -1,6 +1,6 @@
 import redis from "redis";
-import ChatsModel from "../../../Model/ChatsModel.js";
 import onlineCacheConnector from "../OnlineCacheConnector.js";
+import ApplicationCache from "../ApplicationCache.js";
 
 let redisPublisher = null;
 let redisSubscriber = null;
@@ -41,9 +41,19 @@ class RedisBrokerConnector {
         }
     }
 
+    async _getChatParticipants(chat_id){
+
+        let members = await ApplicationCache.getChatMembers(chat_id, true);
+        if (members != null) {
+            return members.map(v => v['user_id'])
+        }
+        return []
+
+    }
+
     async sendToAllChatMembers(msg, chat_id, senderId, exemptSender = true, exactParticipants = undefined) {
 
-        const participants = exactParticipants ? exactParticipants : await ChatsModel.getChatParticipants(chat_id);
+        const participants = exactParticipants ? exactParticipants : await this._getChatParticipants(chat_id);
 
         let groupedParticipantsByWs = await onlineCacheConnector.groupUsersByActiveWebsockets(
             participants,
