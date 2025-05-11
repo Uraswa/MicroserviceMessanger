@@ -13,15 +13,15 @@ class OnlineCacheConnector {
     async clearOnlineCache(websocket_instance) {
         let prevConnections = await this.onlineCache.sMembers('ws' + websocket_instance);
 
-        const pipeline = this.onlineCache.pipeline();
+        const pipeline = [];
 
         for (let user_id of prevConnections) {
-            pipeline.sRem('user_' + user_id.toString(), websocket_instance.toString())
+            pipeline.push(this.onlineCache.sRem('user_' + user_id.toString(), websocket_instance.toString()))
         }
 
-        pipeline.del('ws' + websocket_instance)
+        pipeline.push(this.onlineCache.del('ws' + websocket_instance))
 
-        await pipeline.exec();
+        await Promise.all(pipeline);
     }
 
     async addUserToWs(websocket_instance, user_id){
@@ -41,13 +41,13 @@ class OnlineCacheConnector {
     }
 
     async groupUsersByActiveWebsockets(users_ids, ignore_user_id = undefined) {
-        const pipeline = this.onlineCache.pipeline();
+        const pipeline = [];
 
         for (let user_id of users_ids) {
-            if (user_id != ignore_user_id) pipeline.sMembers("user_" + user_id);
+            if (user_id != ignore_user_id) pipeline.push(this.onlineCache.sMembers("user_" + user_id));
         }
 
-        const pipelineResult = await pipeline.exec();
+        const pipelineResult = await Promise.all(pipeline);
 
         let result = {};
 
