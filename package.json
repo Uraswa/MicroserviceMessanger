@@ -4,7 +4,8 @@
   "main": "tmp_main.js",
   "type": "module",
   "scripts": {
-    "dev": "nodemon api_chat_service.js",
+    "dev_chat": "nodemon api_chat_service.js",
+    "dev_messages": "nodemon api_messages_get_service.js",
     "dev-1": "nodemon Websocket/MessagingNotificationService.js 1",
     "dev-2": "nodemon Websocket/MessagingNotificationService.js 2",
     "dev-3": "nodemon Websocket/MessagingNotificationService.js 3",

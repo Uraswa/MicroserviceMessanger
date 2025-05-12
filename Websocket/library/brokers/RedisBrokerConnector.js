@@ -30,7 +30,7 @@ class RedisBrokerConnector {
         for (let ws in groupedParticipantsByWs) {
             const redisMessage = JSON.stringify({
                 ...msg,
-                recipient_ids: groupedParticipantsByWs[ws],
+                recipient_ids: Array.from(groupedParticipantsByWs[ws]),
                 timestamp: new Date().toISOString()
             });
 
@@ -63,7 +63,7 @@ class RedisBrokerConnector {
         for (let ws in groupedParticipantsByWs) {
             const redisMessage = JSON.stringify({
                 ...msg,
-                recipient_ids: groupedParticipantsByWs[ws],
+                recipient_ids: Array.from(groupedParticipantsByWs[ws]),
                 timestamp: new Date().toISOString()
             });
 

@@ -18,8 +18,8 @@ app.use(authMiddleware);
 
 app.get('/api/getMessages', MessagesSearcherController.getMessages.bind(MessagesSearcherController));
 app.get('/api/getLastChatMessage', MessagesSearcherController.getLastMessage.bind(MessagesSearcherController));
-app.get('/api/getLastMessageByChat', MessagesSearcherController.getLastMessageByChat.bind(MessagesSearcherController));
+app.post('/api/getLastMessageByChat', MessagesSearcherController.getLastMessageByChat.bind(MessagesSearcherController));
 
 app.listen(8003, () => {
-
+    console.log("messages service started!")
 })

@@ -52,8 +52,8 @@ class OnlineCacheConnector {
         let result = {};
 
         let index = 0;
-        for (let [err, websockets] of pipelineResult) {
-            if (err) continue;
+        for (let websockets of pipelineResult) {
+
             for (let ws of websockets) {
 
                 if (!(ws in result)) {

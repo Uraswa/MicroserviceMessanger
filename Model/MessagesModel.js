@@ -1,112 +1,11 @@
-import pg from 'pg'
 import ChatToShardModel from "./ChatToShardModel.js";
-
-const {Pool} = pg;
-
-const pool = new Pool({
-    user: 'nice',
-    host: 'localhost',
-    database: 'chats',
-    password: 'nice',
-    port: 5432,
-});
-
-const SHARDS = [
-    {
-        name: 'shard0', pool: new Pool({
-            user: 'nice',
-            host: 'localhost',
-            database: 'messages_db1',
-            password: 'nice',
-            port: 5432
-        })
-    },
-    {
-        name: 'shard1', pool: new Pool({
-            user: 'nice',
-            host: 'localhost',
-            database: 'messages_db2',
-            password: 'nice',
-            port: 5432
-        })
-    },
-    {
-        name: 'shard2', pool: new Pool({
-            user: 'nice',
-            host: 'localhost',
-            database: 'messages_db3',
-            password: 'nice',
-            port: 5432
-        })
-    },
-    {
-        name: 'shard3', pool: new Pool({
-            user: 'nice',
-            host: 'localhost',
-            database: 'messages_db4',
-            password: 'nice',
-            port: 5432
-        })
-    }
-];
-
-const SHARDS_CACHE = new Map();
 
 class MessagesModel {
 
-
     async getShard(chatId) {
-        let cachedShardIndex = SHARDS_CACHE.get(chatId);
-        if (cachedShardIndex) {
-            return SHARDS[cachedShardIndex];
-        }
-
-        let shard_index = await this.getChatShardIndex(chatId);
-        SHARDS_CACHE[chatId] = shard_index;
-
-        return SHARDS[shard_index];
+        return await ChatToShardModel.getShard(chatId);
     }
 
-    async getChatShardIndex(chatId) {
-        const query = `SELECT shard_index
-                       FROM chats_to_shard
-                       WHERE chat_id = $1`;
-        const values = [chatId];
-        const result = await pool.query(query, values);
-
-        if (!result.rows[0]) {
-            const shardIndex = this.chooseShard();
-            const insertShardInfoQuery = `INSERT INTO chats_to_shard (chat_id, shard_index) VALUES ($1, $2)`;
-            const insertShardInfoRes = await pool.query(insertShardInfoQuery, [chatId, shardIndex]);
-            return shardIndex;
-        }
-
-        return result.rows[0].shard_index;
-    }
-
-    async chooseShard() {
-        let promises = [];
-        for (let shard of SHARDS) {
-            promises.push(shard.pool.query(`SELECT reltuples::bigint AS estimate
-                                            FROM pg_class
-                                            where relname = 'messages'`))
-        }
-        let shardStats = await Promise.all(promises);
-        let minimum = Number.MAX_SAFE_INTEGER;
-        let minimumShard = 0;
-
-        let shardIndex = 0;
-        for (let shardRes of shardStats) {
-            let estimated = Number.parseInt(shardRes.rows[0].estimate);
-            if (estimated < minimum) {
-                minimum = estimated;
-                minimumShard = shardIndex;
-            }
-            shardIndex++;
-        }
-
-        return minimumShard;
-    }
 
     async createMessage(chatId, userId, text) {
         const shard = await this.getShard(chatId);
@@ -133,7 +32,7 @@ class MessagesModel {
             UPDATE messages
             SET text = $1
             WHERE message_id = $2 RETURNING *`;
-        const result = await shard.pool.query(query, [newText, messageId]);
+        const result = await shard.pool.query(query, [newText, messageId], true);
         return result.rows[0];
     }
 
@@ -144,7 +43,7 @@ class MessagesModel {
         const query = `DELETE
                        FROM messages
                        WHERE message_id = $1 RETURNING *`;
-        const result = await shard.pool.query(query, [messageId]);
+        const result = await shard.pool.query(query, [messageId], true);
         return result.rows[0];
     }
 
@@ -188,7 +87,7 @@ class MessagesModel {
                          ORDER BY m.chat_id, m.timestamp DESC;`
 
             let messages = await shard.pool.query(query, []);
-            for (let msg of messages) {
+            for (let msg of messages.rows) {
                 result.push(msg);
             }
         }
@@ -224,7 +123,7 @@ class MessagesModel {
             WHERE chat_id = $1
         `
         let values = [chat_id];
-        await pool.query(query, values);
+        await shard.pool.query(query, values, true);
     }
 }
 

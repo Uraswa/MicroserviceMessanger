@@ -96,6 +96,12 @@ class ApplicationCache {
         }
 
         const chat_members_key = "chat_members_" + chat_id;
+        let existsHashmap = await this.cache.exists(chat_members_key) !== 0;
+
+        if (!existsHashmap) {
+            return;
+        }
+
         const memberJson = JSON.stringify(newMember);
 
         try {
@@ -108,11 +114,8 @@ class ApplicationCache {
                 }
 
                 const reply = await this.cache.hSet(chat_members_key, user_id.toString(), memberJson);
-                if (reply !== 0) {
-                    console.log(`Updated chat_member(${user_id}) for ${chat_members_key}`);
-                    return true;
-                }
-                console.log(`Error! Updating chat_member(${user_id}) for ${chat_members_key} failed. Retrying`);
+                console.log(`Updated chat_member(${user_id}) for ${chat_members_key}`);
+                return true;
             }
 
             console.log(`Error updating user ${user_id} for ${chat_members_key}! Clearing cache...`);
@@ -220,9 +223,15 @@ class ApplicationCache {
 
         try {
 
-            if (force_http_if_not_found && await this.cache.exists(chat_members_key) === 0) {
+            let exists = await this.cache.exists(chat_members_key) !== 0
+
+            if (force_http_if_not_found && !exists) {
                 console.log("Chat members for " + chat_members_key + " are not present in cache. Making http request...");
                 return await this._getChatMemberViaHttp(chat_id, user_id);
+            }
+
+            if (!exists) {
+                return null;
             }
 
 
@@ -248,7 +257,7 @@ class ApplicationCache {
 
         try {
 
-            let exists = await this.cache.exists(chat_members_key) === 0;
+            let exists = await this.cache.exists(chat_members_key) !== 0;
 
             if (force_http_if_not_found && !exists) {
                 console.log("Chat members for " + chat_members_key + " are not present in cache. Making http request...");
@@ -256,7 +265,7 @@ class ApplicationCache {
             }
 
             if (!exists) {
-                return false;
+                return null;
             }
 
             const members = await this.cache.hGetAll(chat_members_key);
@@ -276,4 +285,5 @@ class ApplicationCache {
 }
 
 const cache = new ApplicationCache();
+await cache.init();
 export default cache;

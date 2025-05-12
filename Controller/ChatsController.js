@@ -34,7 +34,7 @@ class ChatsController {
                     }
                 };
                 await brokerConnector.sendToAllChatMembers(response, chat_id, user_id, false, chatParticipants);
-                res.status(200).json(response);
+                return res.status(200).json(response);
             }
         } catch (e) {
             console.log(e);
@@ -50,7 +50,7 @@ class ChatsController {
         try {
             const {chat_id} = req;
             const self_userid = req.user.user_id;
-            const other_user_id = req.body.user_id;
+            const other_user_id = req.body.other_user_id;
 
             let chatParticipants = await ChatsModel.getChatParticipants(chat_id);
             if (other_user_id === self_userid) {
@@ -225,7 +225,7 @@ class ChatsController {
             let messagesResponse = await messagesReq;
             let messages = [];
 
-            if (messagesResponse.status === 200 && !messagesResponse.data.success) {
+            if (messagesResponse.status === 200 && messagesResponse.data.success) {
                 messages = messagesResponse.data.data;
             }
 
@@ -242,7 +242,7 @@ class ChatsController {
 
             let userProfiles = profiles.data.data.profiles;
 
-            res.status(200).json({
+            return res.status(200).json({
                 success: true,
                 data: {messages, userProfiles, members, chat_name, is_ls, chat_id}
             });
@@ -341,6 +341,7 @@ class ChatsController {
                 chatIds.push(chat_id);
                 chat.last_message_timestamp = chat.created_time;
                 chatsMap.set(chat_id, chat);
+                if (chat.other_user_id) usersIds.add(chat.other_user_id);
             }
 
             let messagesResponse = await InnerCommunicationService.post('/api/getLastMessageByChat', {
@@ -360,7 +361,7 @@ class ChatsController {
                     chat.last_message_timestamp = msg.timestamp;
 
                     if (chat.last_message_user_id) usersIds.add(chat.last_message_user_id);
-                    if (chat.other_user_id) usersIds.add(chat.other_user_id);
+
                 }
 
             }
@@ -371,7 +372,7 @@ class ChatsController {
                 userProfiles = result.data.data.profiles;
             }
 
-            res.status(200).json({
+            return res.status(200).json({
                 success: true,
                 data: {chats, userProfiles}
             });
@@ -414,7 +415,7 @@ class ChatsController {
 
             inviteLink = "http://localhost:9000/joinChat/" + inviteLink;
 
-            res.status(200).json({
+            return res.status(200).json({
                 success: true,
                 data: {
                     link: inviteLink
@@ -677,7 +678,7 @@ class ChatsController {
                 type: "blockUnblockUserInChat",
                 success: true,
                 data: {
-                    chat_id: msg.chat.chat_id,
+                    chat_id: chat.chat_id,
                     other_user_id: other_user_id,
                     block_state: block_state
                 }

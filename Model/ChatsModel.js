@@ -1,17 +1,20 @@
 import crypto from "crypto";
 import pg from 'pg'
 import ApplicationCache from "../Websocket/library/ApplicationCache.js";
+import PoolWrapper from "../Core/PoolWrapper.js";
 
 const {Pool} = pg;
 
-const pool = new Pool({
-    user: 'nice',
-    host: 'localhost',
-    database: 'chats',
-    password: 'nice',
-    port: 5432,
-});
-
+// Конфигурация соединений
+const pool = new PoolWrapper({
+    ports: [6700, 6701, 6702],
+    base: {
+         user: 'postgres',
+         host: 'localhost',
+         database: 'postgres',
+         password: 'nice'
+    }
+})
 
 class ChatsModel {
 
@@ -114,7 +117,7 @@ class ChatsModel {
         const query = `
             INSERT INTO chat_invite_link (chat_id, user_id, link)
             VALUES ($1, $2, $3) RETURNING *`;
-        const result = await pool.query(query, [chatId, creatorId, link]);
+        const result = await pool.query(query, [chatId, creatorId, link], true);
         if (result) return link;
         return undefined;
     }
@@ -349,9 +352,11 @@ WHERE cm.user_id =
     }
 
     async getChatMember(chat_id, user_id, must_be_not_kicked = true) {
-        let cacheResponse = await ApplicationCache.getChatMember(chat_id, user_id, false);
-        if (cacheResponse === false) return undefined;
-        if (cacheResponse !== false) return cacheResponse;
+        if (must_be_not_kicked) {
+            let cacheResponse = await ApplicationCache.getChatMember(chat_id, user_id, false);
+            if (cacheResponse === false) return undefined;
+            if (cacheResponse) return cacheResponse;
+        }
 
         const query = `
             SELECT *
@@ -365,7 +370,7 @@ WHERE cm.user_id =
 
     async blockUnblockUserInChat(chat_id, other_user_id, block_state) {
         const query = "UPDATE chat_member SET is_blocked = $1 WHERE chat_id = $2 and user_id = $3 RETURNING *";
-        const result = await pool.query(query, [block_state, chat_id, other_user_id]);
+        const result = await pool.query(query, [block_state, chat_id, other_user_id], true);
 
         await ApplicationCache.editUserChatMember(chat_id, other_user_id, {
             user_id: other_user_id,
@@ -379,9 +384,7 @@ WHERE cm.user_id =
     async getChatMembers(chat_id, is_kicked = false) {
         let cachedMembers = await ApplicationCache.getChatMembers(chat_id, false);
 
-        if (cachedMembers === null) return [];
-        if (cachedMembers !== false) return cachedMembers;
-
+        if (cachedMembers) return cachedMembers;
 
         const query = `
             SELECT user_id, is_admin, is_blocked

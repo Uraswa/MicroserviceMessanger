@@ -37,7 +37,7 @@ app.get('/api/getChatMember', ChatsController.getChatMember.bind(ChatsController
 app.get('/api/getChatById', ChatsController.getChatById.bind(ChatsController))
 
 app.listen(8000, () => {
-
+    console.log("chats service started!")
 })
 
 process.on('SIGTERM', async () => {

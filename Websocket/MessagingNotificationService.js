@@ -298,9 +298,7 @@ async function setupRedisSubscriptions() {
                             continue;
                         }
 
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(message);
-                        }
+                        ws.send(message);
                     }
                 }
             }

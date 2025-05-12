@@ -25,7 +25,7 @@ class MessagesSearcherController {
 
             const messages = await MessagesModel.getMessages(chat_id, last_message_id)
 
-            res.status(200).json({
+            return res.status(200).json({
                 success: true,
                 data: messages
             });
@@ -95,7 +95,7 @@ class MessagesSearcherController {
 
             let messages = await MessagesModel.getLastMessagesByChat(chatsIds);
 
-            res.status(200).json({
+            return res.status(200).json({
                 success: true,
                 data: messages
             })
