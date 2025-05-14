@@ -129,7 +129,7 @@ class ApplicationCache {
     }
 
     async _getChatMemberViaHttp(chat_id, user_id) {
-        let response = InnerCommunicationService.get('/api/getChatMember?chat_id=' + chat_id + "&user_id=" + user_id, 8000);
+        let response = await InnerCommunicationService.get('/api/getChatMember?chat_id=' + chat_id + "&user_id=" + user_id, 8000);
         if (response.status === 200 && response.data.success) {
             return response.data.data.member;
         }
@@ -138,7 +138,7 @@ class ApplicationCache {
     }
 
     async _getChatMembersViaHttp(chat_id) {
-        let response = InnerCommunicationService.get('/api/getChatMembers?chat_id=' + chat_id, 8000);
+        let response = await InnerCommunicationService.get('/api/getChatMembers?chat_id=' + chat_id, 8000);
         if (response.status === 200 && response.data.success) {
             return response.data.data.members;
         }
