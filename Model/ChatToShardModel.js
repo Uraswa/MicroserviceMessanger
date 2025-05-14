@@ -53,6 +53,10 @@ class ChatToShardModel {
         return SHARDS[shard_index];
     }
 
+    async getShardByIndex(index) {
+        return SHARDS[index];
+    }
+
 
     async chooseShard() {
         let promises = [];

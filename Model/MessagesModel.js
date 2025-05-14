@@ -1,9 +1,16 @@
 import ChatToShardModel from "./ChatToShardModel.js";
 
+const SQL_MSG_FIELDS = `m.chat_id, m.text, m.user_id, (m.timestamp AT TIME ZONE 'UTC') as created_time, m.message_id`
+
+
 class MessagesModel {
 
     async getShard(chatId) {
         return await ChatToShardModel.getShard(chatId);
+    }
+
+    async getShardByIndex(index) {
+        return await ChatToShardModel.getShardByIndex(index);
     }
 
 
@@ -51,8 +58,8 @@ class MessagesModel {
         const shard = await this.getShard(chatId);
         console.log(`Using ${shard.name} for chat ${chatId}`);
 
-        const query = `SELECT *
-                       FROM messages
+        const query = `SELECT ${SQL_MSG_FIELDS}
+                       FROM messages m
                        WHERE message_id = $1`;
         const values = [messageId];
         const result = await shard.pool.query(query, values);
@@ -62,8 +69,8 @@ class MessagesModel {
     async getLastChatMessage(chat_id) {
         const shard = await this.getShard(chat_id);
         console.log(`Using ${shard.name} for chat ${chat_id}`);
-        const query = `SELECT *
-                       FROM messages
+        const query = `SELECT ${SQL_MSG_FIELDS}
+                       FROM messages m
                        WHERE chat_id = $1
                        ORDER BY timestamp DESC LIMIT 1`;
         const values = [chat_id];
@@ -77,11 +84,11 @@ class MessagesModel {
         let result = [];
 
         for (let shardGroup of gropedByShard) {
-            let shard = await this.getShard(shardGroup.shard_index);
+            let shard = await this.getShardByIndex(shardGroup.shard_index);
 
             let query = `SELECT DISTINCT
                          ON (m.chat_id)
-                             m.chat_id, m.text, m.user_id, m.timestamp, m.message_id
+                             ${SQL_MSG_FIELDS}
                          FROM messages m
                          WHERE m.chat_id IN (${shardGroup.chats})
                          ORDER BY m.chat_id, m.timestamp DESC;`
@@ -99,8 +106,8 @@ class MessagesModel {
         const shard = await this.getShard(chat_id);
         console.log(`Using ${shard.name} for chat ${chat_id}`);
         const query = `
-            SELECT *
-            FROM messages
+            SELECT ${SQL_MSG_FIELDS}
+            FROM messages m
             WHERE chat_id = $1 ${last_message_id ? 'and message_id < $2' : ''}
             ORDER BY message_id DESC
                 LIMIT 25

@@ -1,8 +1,8 @@
 import ChatsModel from "../Model/ChatsModel.js";
 import InnerCommunicationService from "../services/innerCommunicationService.js";
-import RedisBrokerConnector from "../Websocket/library/brokers/RedisBrokerConnector.js";
+import RabbitMQBrokerConnector from "../Websocket/library/brokers/RabbitMQBrokerConnector.js";
 
-const brokerConnector = RedisBrokerConnector;
+const brokerConnector = RabbitMQBrokerConnector;
 await brokerConnector.initPublisher();
 
 class ChatsController {
@@ -83,6 +83,7 @@ class ChatsController {
         })
     }
 
+    //SERVER ONLY
     async getChatMember(req, res) {
         let user = req.user;
         try {
@@ -114,6 +115,7 @@ class ChatsController {
         })
     }
 
+    //SERVER ONLY
     async getChatMembers(req, res) {
         let user = req.user;
         try {
@@ -146,6 +148,7 @@ class ChatsController {
         })
     }
 
+    //SERVER ONLY
     async getChatById(req, res) {
         let user = req.user;
         try {
@@ -212,7 +215,15 @@ class ChatsController {
             let chat_name = chat.chat_name;
             let is_ls = chat.is_ls;
 
-            if (!await ChatsModel.getChatMember(chat_id, user.user_id)) {
+            let chat_member = await ChatsModel.getChatMember(chat_id, user.user_id)
+            if (!chat_member) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'access denied'
+                });
+            }
+
+            if (!is_ls && chat_member.is_chat_hidden) {
                 return res.status(403).json({
                     success: false,
                     error: 'access denied'
@@ -234,7 +245,10 @@ class ChatsController {
                 userIds.add(message.user_id);
             }
 
+            const filteredMembers = [];
             for (let member of members) {
+                if (member.is_chat_hidden && !is_ls) continue;
+                filteredMembers.push(member);
                 userIds.add(member.user_id)
             }
 
@@ -244,7 +258,7 @@ class ChatsController {
 
             return res.status(200).json({
                 success: true,
-                data: {messages, userProfiles, members, chat_name, is_ls, chat_id}
+                data: {messages, userProfiles, chat_name, is_ls, chat_id, members: filteredMembers}
             });
         } catch (e) {
             console.log(e)
@@ -358,7 +372,7 @@ class ChatsController {
                     chat.last_message_id = msg.message_id;
                     chat.last_message_text = msg.text;
                     chat.last_message_user_id = msg.user_id;
-                    chat.last_message_timestamp = msg.timestamp;
+                    chat.last_message_timestamp = msg.created_time;
 
                     if (chat.last_message_user_id) usersIds.add(chat.last_message_user_id);
 
@@ -413,7 +427,7 @@ class ChatsController {
                 });
             }
 
-            inviteLink = "http://localhost:9000/joinChat/" + inviteLink;
+            inviteLink = "http://"+process.env.API_URL+"/joinChat/" + inviteLink;
 
             return res.status(200).json({
                 success: true,
@@ -658,12 +672,12 @@ class ChatsController {
                 })
             }
 
-            if (otherMember.is_blocked && block_state || !otherMember.is_blocked && !block_state) {
-                return res.status(200).json({
-                    success: false,
-                    error: "Already_blocked"
-                })
-            }
+            // if (otherMember.is_blocked && block_state || !otherMember.is_blocked && !block_state) {
+            //     return res.status(200).json({
+            //         success: false,
+            //         error: "Already_blocked"
+            //     })
+            // }
 
             let blockUnblockResult = await ChatsModel.blockUnblockUserInChat(chat.chat_id, other_user_id, block_state);
             if (!blockUnblockResult) {

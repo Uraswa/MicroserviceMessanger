@@ -15,6 +15,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(authMiddleware);
+app.disable('etag');
 
 app.get('/api/getMessages', MessagesSearcherController.getMessages.bind(MessagesSearcherController));
 app.get('/api/getLastChatMessage', MessagesSearcherController.getLastMessage.bind(MessagesSearcherController));

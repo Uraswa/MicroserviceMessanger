@@ -41,7 +41,7 @@ class RedisBrokerConnector {
         }
     }
 
-    async _getChatParticipants(chat_id){
+    async _getChatParticipants(chat_id) {
 
         let members = await ApplicationCache.getChatMembers(chat_id, true);
         if (members != null) {
@@ -61,6 +61,7 @@ class RedisBrokerConnector {
         );
 
         for (let ws in groupedParticipantsByWs) {
+
             const redisMessage = JSON.stringify({
                 ...msg,
                 recipient_ids: Array.from(groupedParticipantsByWs[ws]),

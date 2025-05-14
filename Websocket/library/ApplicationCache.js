@@ -3,7 +3,6 @@ import InnerCommunicationService from "../../services/innerCommunicationService.
 
 class ApplicationCache {
     cache;
-    set_tries = 5;
     reconnect_timeout = null;
 
     async init() {
@@ -28,170 +27,105 @@ class ApplicationCache {
         }, 5000)
     }
 
-    async clearChatMembersCache(chat_member_key) {
-        console.log("Trying to clear up cache for " + chat_member_key);
-        for (let i = 0; i < this.set_tries; i++) {
+    async trySetChatMembers(chatId, members) {
+
+        const lockKey = `lock_chat_${chatId}`;
+        const dataKey = `chat_members_${chatId}`;
+
+        let script = `
+            if redis.call("GET", KEYS[1]) == "0" or redis.call("EXISTS", KEYS[1]) == 0 then 
+                ${this._makeHSETLuaReq(members, "2")}
+                return 1
+            else
+                return 0
+            end
+        `;
+        let args = members.map(v => JSON.stringify(v))
+
+        await this.cache.eval(script, {
+            keys: [lockKey, dataKey],
+            arguments: args
+        })
+    }
+
+    _makeHSETLuaReq(members, set_key = "1") {
+        return members.map((v, i, a) => `
+                                    redis.call("HSET", KEYS[${set_key}], "${v['user_id']}", ARGV[${i + 1}])
+                                `).join('\n') + '\n';
+    }
+
+    async updateChatMembers(chatId, updateOperation, maxRetries = 3, retryDelayMs = 100) {
+        const lockKey = `lock_chat_${chatId}`;
+        const dataKey = `chat_members_${chatId}`;
+        let retries = 0;
+
+        while (retries < maxRetries) {
             try {
-                const reply = await this.cache.del(chat_member_key);
-                if (reply === 1) {
-                    console.log("Cache for " + chat_member_key + " has been cleared");
-                    return;
-                }
-            } catch (err) {
-                console.log("Error! clearing cache for " + chat_member_key + " Retrying...")
-            }
-        }
-        console.log("Cache clearing for " + chat_member_key + " failed!");
-    }
+                //TODO что будет если запрос к бд займет дольше 10 сек?
+                // Пытаемся получить блокировку (Lua-скрипт)
+                const locked = await this.cache.eval(`
+                if redis.call("GET", KEYS[1]) == "0" or redis.call("EXISTS", KEYS[1]) == 0 then
+                    redis.call("SET", KEYS[1], "1", "EX", 30)
+                    redis.call("DEL", KEYS[2])
+                    return 1
+                else
+                    return 0
+                end
+            `, {
+                    keys: [lockKey, dataKey],
+                });
 
-    async addUserAsChatMember(chat_id, member, check_len) {
-        if (!this.cache?.isReady) {
-            console.log("Redis connection lost!");
-            return false;
-        }
+                if (locked === 1) {
+                    try {
+                        // 1. Сначала обновляем БД (источник истины)
+                        let {members, success} = await updateOperation();
 
-        const chat_members_key = "chat_members_" + chat_id;
+                        if (!success) return;
 
-        try {
-            if (await this.cache.exists(chat_members_key) === 0) {
-                console.log("Chat members for " + chat_members_key + " are not present in cache. Skipping....");
-                return false;
-            }
+                        if (members.length > 0) {
 
-            const amountOfMembers = await this.cache.hLen(chat_members_key);
+                            // 2. Атомарно обновляем Redis и снимаем блокировку (Lua)
 
-            if (amountOfMembers != check_len) {
-                console.log(`Error! Amount of chat members in redis is not the same as in db. DB=${check_len}; REDIS=${amountOfMembers}`);
-                await this.clearChatMembersCache(chat_members_key);
-                return false;
-            }
+                            let script = `
+                                ${this._makeHSETLuaReq(members)}
+                                redis.call("DEL", KEYS[2])
+                            `;
+                            let args = members.map(v => JSON.stringify(v))
 
-            const memberJson = JSON.stringify(member);
+                            await this.cache.eval(script
+                                , {
+                                    keys: [dataKey, lockKey],
+                                    arguments: args,
+                                });
+                        } else {
+                            // нужно выполнить АВТОМАРНОЕ удаление
+                            await this.cache.eval(`
+                                redis.call("DEL", KEYS[1])
+                                    redis.call("DEL", KEYS[2])
+                                `, {
+                                keys: [dataKey, lockKey]
+                            });
+                        }
 
-            for (let i = 0; i < this.set_tries; i++) {
-                try {
-                    const reply = await this.cache.hSet(chat_members_key, member.user_id.toString(), memberJson);
-                    if (reply !== 0) {
-                        console.log("Added new chat_member(" + memberJson + ") for " + chat_members_key);
-                        return true;
+
+                        return {success: true};
+                    } catch (dbError) {
+                        // Если ошибка в БД, снимаем блокировку и пробрасываем исключение
+                        await this.cache.decr(lockKey);
+                        throw dbError;
                     }
-                } catch (err) {
-                    console.log("Error! Adding chat_member(" + memberJson + ") for " + chat_members_key + " failed. Retrying");
+                } else {
+                    // Блокировка занята — ждём и пробуем снова
+                    await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+                    retries++;
                 }
+            } catch (redisError) {
+                console.error("Redis error:", redisError);
+                retries++;
             }
-
-            console.log("Error adding user " + JSON.stringify(member) + " for " + chat_members_key + " chat member! Trying to destroy whole members list");
-            await this.clearChatMembersCache(chat_members_key);
-            return false;
-        } catch (err) {
-            console.error("Error in addUserAsChatMember:", err);
-            return false;
-        }
-    }
-
-    async editUserChatMember(chat_id, user_id, newMember) {
-        if (!this.cache?.isReady) {
-            console.log("Redis connection lost!");
-            return false;
         }
 
-        const chat_members_key = "chat_members_" + chat_id;
-        let existsHashmap = await this.cache.exists(chat_members_key) !== 0;
-
-        if (!existsHashmap) {
-            return;
-        }
-
-        const memberJson = JSON.stringify(newMember);
-
-        try {
-            for (let i = 0; i < this.set_tries; i++) {
-                const exists = await this.cache.hExists(chat_members_key, user_id.toString());
-                if (!exists) {
-                    await this.clearChatMembersCache(chat_members_key);
-                    console.log(`User ${user_id} not found in chat ${chat_id}`);
-                    return false;
-                }
-
-                const reply = await this.cache.hSet(chat_members_key, user_id.toString(), memberJson);
-                console.log(`Updated chat_member(${user_id}) for ${chat_members_key}`);
-                return true;
-            }
-
-            console.log(`Error updating user ${user_id} for ${chat_members_key}! Clearing cache...`);
-            await this.clearChatMembersCache(chat_members_key);
-            return false;
-        } catch (err) {
-            console.error("Error in editUserChatMember:", err);
-            return false;
-        }
-    }
-
-    async addChatMembers(chat_id, members) {
-        if (!this.cache?.isReady) {
-            console.log("Redis connection lost!");
-            return false;
-        }
-
-        const chat_members_key = "chat_members_" + chat_id;
-
-        try {
-            // Создаем объект для массового добавления
-            const membersData = {};
-            members.forEach(member => {
-
-                if (member.is_kicked) return;
-
-                membersData[member.user_id.toString()] = JSON.stringify(member);
-            });
-
-            // Добавляем всех участников за одну операцию
-            const reply = await this.cache.hSet(chat_members_key, membersData);
-
-            if (reply === members.length) {
-                console.log(`Added ${members.length} members to ${chat_members_key}`);
-                return true;
-            } else {
-                console.log(`Error! Only ${reply} of ${members.length} members were added to ${chat_members_key}`);
-                await this.clearChatMembersCache(chat_members_key);
-                return false;
-            }
-        } catch (err) {
-            console.error("Error in addChatMembers:", err);
-            await this.clearChatMembersCache(chat_members_key);
-            return false;
-        }
-    }
-
-    async removeUserAsChatMember(chat_id, user_id) {
-        if (!this.cache?.isReady) {
-            console.log("Redis connection lost!");
-            return false;
-        }
-
-        const chat_members_key = "chat_members_" + chat_id;
-
-        try {
-            for (let i = 0; i < this.set_tries; i++) {
-                const reply = await this.cache.hDel(chat_members_key, user_id.toString());
-                if (reply === 1) {
-                    console.log(`Removed user ${user_id} from ${chat_members_key}`);
-                    return true;
-                } else if (reply === 0) {
-                    console.log(`User ${user_id} not found in ${chat_members_key}`);
-                    await this.clearChatMembersCache(chat_members_key);
-                    return false;
-                }
-                console.log(`Error! Removing user ${user_id} from ${chat_members_key} failed. Retrying`);
-            }
-
-            console.log(`Error removing user ${user_id} from ${chat_members_key}! Clearing cache...`);
-            await this.clearChatMembersCache(chat_members_key);
-            return false;
-        } catch (err) {
-            console.error("Error in removeUserAsChatMember:", err);
-            return false;
-        }
+        throw new Error(`Не удалось обновить состав чата ${chatId} после ${maxRetries} попыток`);
     }
 
     async _getChatMemberViaHttp(chat_id, user_id) {
@@ -281,6 +215,28 @@ class ApplicationCache {
             console.error("Error in getChatMembers:", err);
             return null;
         }
+    }
+
+    async setKey(key, value) {
+        await this.cache.set(key, value);
+    }
+
+    async removeKey(key) {
+        await this.cache.del(key);
+    }
+
+    async editKey(key, value) {
+        await this.cache.set(key, value);
+    }
+
+    async getKey(key) {
+        return await this.cache.get(key);
+    }
+
+    async getKeyJson(key) {
+        let val = await this.getKey(key);
+        if (!val) return val;
+        return JSON.parse(val);
     }
 }
 

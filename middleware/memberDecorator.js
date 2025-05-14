@@ -16,7 +16,7 @@ export default (adminRequired, mustBeNotBlocked) => {
         }
 
         let member = await ChatsModel.getChatMember(chat_id, req.user.user_id);
-        if (!member || !member.is_admin && adminRequired || member.is_kicked || mustBeNotBlocked && member.is_blocked) {
+        if (!member || member.is_chat_hidden || !member.is_admin && adminRequired || member.is_kicked || mustBeNotBlocked && member.is_blocked) {
 
             return res.status(200).json({
                 success: false,

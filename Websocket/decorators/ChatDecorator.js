@@ -5,6 +5,9 @@ export class ChatDecorator extends WebsocketDecorator {
 
     async callback(ws, user_id, msg) {
         let chat_id = msg.data.chat_id;
+
+        let chatFromCache =
+
         let chatResponse = await InnerCommunicationService.get('/api/getChatById?chat_id=' + chat_id, 8000);
 
         if (chatResponse.status !== 200 || !chatResponse.data.success) {

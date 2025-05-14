@@ -20,17 +20,40 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(authMiddleware);
+app.disable('etag');
 
 app.get('/api/getChats', ChatsController.getChats.bind(ChatsController));
 app.get('/api/getChatInfo', ChatsController.getChatInfo.bind(ChatsController));
 app.get('/api/joinChat', ChatsController.joinChat.bind(ChatsController));
 app.get('/api/getOrCreateInvitationLink', ChatsController.getOrCreateInvitationLink.bind(ChatsController));
-app.post('/api/leaveChat', chatDecorator, memberDecorator(false), ChatsController.leaveChat.bind(ChatsController));
-app.post('/api/kickFromChat', chatDecorator, memberDecorator(true), ChatsController.kickFromChat.bind(ChatsController));
-app.post('/api/updateChat', chatDecorator, memberDecorator(true), ChatsController.updateChat.bind(ChatsController));
+
+app.post('/api/leaveChat',
+    chatDecorator('not_ls'),
+    memberDecorator(false),
+    ChatsController.leaveChat.bind(ChatsController)
+);
+app.post('/api/kickFromChat',
+    chatDecorator(),
+    memberDecorator(true),
+    ChatsController.kickFromChat.bind(ChatsController)
+);
+app.post('/api/updateChat',
+    chatDecorator('not_ls'),
+    memberDecorator(true),
+    ChatsController.updateChat.bind(ChatsController)
+);
 app.post('/api/createChat', ChatsController.createChat.bind(ChatsController))
-app.post('/api/deleteChat', chatDecorator, memberDecorator(false),ChatsController.deleteChat.bind(ChatsController))
-app.post('/api/blockUnblockUserInChat', chatDecorator, memberDecorator(false),ChatsController.blockUnblockUserInChat.bind(ChatsController))
+
+app.post('/api/deleteChat',
+    chatDecorator(),
+    memberDecorator(false),
+    ChatsController.deleteChat.bind(ChatsController)
+)
+app.post('/api/blockUnblockUserInChat',
+    chatDecorator(),
+    memberDecorator(false),
+    ChatsController.blockUnblockUserInChat.bind(ChatsController)
+)
 
 app.get('/api/getChatMembers', ChatsController.getChatMembers.bind(ChatsController))
 app.get('/api/getChatMember', ChatsController.getChatMember.bind(ChatsController))

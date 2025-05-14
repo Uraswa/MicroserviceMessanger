@@ -1,18 +1,17 @@
 import crypto from "crypto";
-import pg from 'pg'
 import ApplicationCache from "../Websocket/library/ApplicationCache.js";
 import PoolWrapper from "../Core/PoolWrapper.js";
-
-const {Pool} = pg;
+import ChatMemberCacheDTO from "../dtos/ChatMemberCacheDTO.js";
+import ChatCacheDTO from "../dtos/ChatCacheDTO.js";
 
 // Конфигурация соединений
 const pool = new PoolWrapper({
     ports: [6700, 6701, 6702],
     base: {
-         user: 'postgres',
-         host: 'localhost',
-         database: 'postgres',
-         password: 'nice'
+        user: 'postgres',
+        host: 'localhost',
+        database: 'postgres',
+        password: 'nice'
     }
 })
 
@@ -31,27 +30,20 @@ class ChatsModel {
 
             const chatResult = await client.query(
                 `INSERT INTO chats (chat_name, is_ls)
-                 VALUES ('', true) RETURNING chat_id`
+                 VALUES ('', true)
+                 RETURNING chat_id`
             );
             const chatId = chatResult.rows[0].chat_id;
 
-            await client.query(
+            let insertChatMembersRes = await client.query(
                 `INSERT INTO chat_member (chat_id, user_id)
                  VALUES ($1, $2),
-                        ($1, $3)`,
+                        ($1, $3)
+                 RETURNING *`,
                 [chatId, userId1, userId2]
             );
 
             await client.query('COMMIT');
-
-            await ApplicationCache.addChatMembers(chatId, [
-                {
-                    user_id: userId1,
-                },
-                {
-                    user_id: userId2
-                }
-            ])
 
             return {chat_id: chatId, is_ls: true};
         } catch (err) {
@@ -62,33 +54,27 @@ class ChatsModel {
         }
     }
 
-    async createGroupChat(creatorId, chatName, initialMembers = []) {
+    async createGroupChat(creatorId, chatName) {
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
 
             const chatResult = await client.query(
                 `INSERT INTO chats (chat_name, is_ls)
-                 VALUES ($1, false) RETURNING chat_id`,
+                 VALUES ($1, false)
+                 RETURNING chat_id`,
                 [chatName]
             );
             const chatId = chatResult.rows[0].chat_id;
 
-            await client.query(
+            let chat_member_res = await client.query(
                 `INSERT INTO chat_member (chat_id, user_id, invited_by, is_admin)
-                 VALUES ($1, $2, null, true)`,
+                 VALUES ($1, $2, null, true)
+                 RETURNING *`,
                 [chatId, creatorId]
             );
 
-
             await client.query('COMMIT');
-
-            await ApplicationCache.addChatMembers(chatId, [
-                {
-                    user_id: creatorId,
-                    is_admin: true
-                }
-            ])
 
             return {chat_id: chatId, is_ls: false};
         } catch (err) {
@@ -116,68 +102,64 @@ class ChatsModel {
 
         const query = `
             INSERT INTO chat_invite_link (chat_id, user_id, link)
-            VALUES ($1, $2, $3) RETURNING *`;
+            VALUES ($1, $2, $3)
+            RETURNING *`;
         const result = await pool.query(query, [chatId, creatorId, link], true);
         if (result) return link;
         return undefined;
     }
 
     async leaveChat(userId, chatId) {
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
+        let callback = async () => {
 
-            const leaveResult = await client.query(
-                `DELETE
-                 FROM chat_member
+            const leaveResult = await pool.query(
+                `UPDATE chat_member
+                 SET is_chat_hidden = TRUE
                  WHERE user_id = $1
-                   and chat_id = $2 RETURNING *`, [userId, chatId]
+                   and chat_id = $2
+                 RETURNING *`, [userId, chatId], true
             )
 
-            await client.query('COMMIT');
 
-            let success = !!leaveResult.rows[0];
-            if (success) {
-                await ApplicationCache.removeUserAsChatMember(chatId, userId)
+            if (leaveResult.rows[0]) {
+                let members = await this.getChatMembers(chatId, false, false);
+                return {members: members.map(v => ChatMemberCacheDTO(v)), success: true}
+            } else {
+                return {
+                    success: false
+                }
             }
-
-            return success;
-        } catch (err) {
-            await client.query('ROLLBACK');
-            throw err;
-        } finally {
-            client.release();
         }
 
+        let result = await ApplicationCache.updateChatMembers(chatId, callback);
+        return result.success;
     }
 
     async kickFromChat(userId, chatId) {
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
 
-            const leaveResult = await client.query(
+        let callback = async () => {
+
+            const kickResult = await pool.query(
                 `UPDATE chat_member
                  SET is_kicked = true
                  WHERE user_id = $1
-                   and chat_id = $2 RETURNING *`, [userId, chatId]
+                   and chat_id = $2
+                 RETURNING *`, [userId, chatId], true
             )
 
-            await client.query('COMMIT');
 
-            let success = !!leaveResult.rows[0]
-            if (success) {
-                await ApplicationCache.removeUserAsChatMember(chatId, userId)
+            if (kickResult.rows[0]) {
+                let members = await this.getChatMembers(chatId, false, false);
+                return {members: members.map(v => ChatMemberCacheDTO(v)), success: true}
+            } else {
+                return {
+                    success: false
+                }
             }
-
-            return success;
-        } catch (err) {
-            await client.query('ROLLBACK');
-            throw err;
-        } finally {
-            client.release();
         }
 
+        let result = await ApplicationCache.updateChatMembers(chatId, callback);
+        return result.success;
     }
 
     async getChatIdByInviteLink(link) {
@@ -193,48 +175,44 @@ class ChatsModel {
 
 
     async joinChatByInviteLink(userId, link) {
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
 
-            const linkResult = await client.query(
-                `SELECT chat_id, user_id as inviter_id
-                 FROM chat_invite_link
-                 WHERE link = $1`,
-                [link]
-            );
+        let linkResult = await pool.query(
+            `SELECT chat_id, user_id as inviter_id
+             FROM chat_invite_link
+             WHERE link = $1`,
+            [link]
+        );
 
-            if (linkResult.rows.length === 0) {
-                return {error: "Invalid invitation link"}
-            }
+        if (linkResult.rows.length === 0) {
+            return {error: "Invalid invitation link"}
+        }
 
-            const {chat_id, inviter_id} = linkResult.rows[0];
+        const {chat_id, inviter_id} = linkResult.rows[0];
 
-            await client.query(
+        let callback = async () => {
+
+            await pool.query(
                 `INSERT INTO chat_member (chat_id, user_id, invited_by)
                  VALUES ($1, $2, $3)`,
-                [chat_id, userId, inviter_id]
+                [chat_id, userId, inviter_id], true
             );
 
+            let members = await this.getChatMembers(chat_id, false, false);
+            return {members: members.map(v => ChatMemberCacheDTO(v)), success: true}
+        }
 
-            await client.query('COMMIT');
-
-
-            await ApplicationCache.addUserAsChatMember(chat_id, {
-                user_id: userId
-            }, await this._getMembersCount(chat_id) - 1)
-
-            return {chat_id, joined: true};
-        } catch (err) {
-            await client.query('ROLLBACK');
-            throw err;
-        } finally {
-            client.release();
+        let result = await ApplicationCache.updateChatMembers(chat_id, callback);
+        if (result.success) {
+            return {chat_id: chat_id, joined: true}
+        } else {
+            return {error: true}
         }
     }
 
     async _getMembersCount(chat_id) {
-        let query = `SELECT COUNT(*) as cnt FROM chat_member WHERE chat_id = $1`;
+        let query = `SELECT COUNT(*) as cnt
+                     FROM chat_member
+                     WHERE chat_id = $1`;
         let result = await pool.query(query, [chat_id]);
 
         let firstRow = result.rows[0];
@@ -244,51 +222,38 @@ class ChatsModel {
     }
 
     async deleteGroupChat(chatId) {
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
 
-            const result = await client.query(
+        let callback = async () => {
+            const result = await pool.query(
                 `DELETE
                  FROM chats
-                 WHERE chat_id = $1 RETURNING *`,
-                [chatId]
+                 WHERE chat_id = $1
+                 RETURNING *`,
+                [chatId], true
             );
 
-            await client.query('COMMIT');
-
-            await ApplicationCache.clearChatMembersCache("chat_members_" + chatId)
-
-            return result.rows[0];
-        } catch (err) {
-            await client.query('ROLLBACK');
-            throw err;
-        } finally {
-            client.release();
+            if (result.rows.length > 0) {
+                return {members: [], success: true}
+            } else {
+                return {success: false}
+            }
         }
+
+        let updateRes = await ApplicationCache.updateChatMembers(chatId, callback);
+        return updateRes.success;
     }
 
     async updateGroupChat(chatId, newChatName) {
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
+        const result = await pool.query(
+            `UPDATE chats
+             SET chat_name = $2
+             WHERE chat_id = $1
+               AND is_ls = false
+             RETURNING *`,
+            [chatId, newChatName], true
+        );
 
-            const result = await client.query(
-                `UPDATE chats
-                 SET chat_name = $2
-                 WHERE chat_id = $1
-                   AND is_ls = false RETURNING *`,
-                [chatId, newChatName]
-            );
-
-            await client.query('COMMIT');
-            return result.rows[0];
-        } catch (err) {
-            await client.query('ROLLBACK');
-            throw err;
-        } finally {
-            client.release();
-        }
+        return result.rows[0];
     }
 
     async getChats(userId, filters = {}) {
@@ -299,15 +264,20 @@ class ChatsModel {
                    c.is_ls,
                    (CASE
                         WHEN c.is_ls = true
-                            THEN (SELECT user_id FROM chat_member WHERE user_id != $1 and
-                    chat_id = c.chat_id LIMIT 1) ELSE NULL
-            END
-            ) as other_user_id,
-    c.created_time
-FROM chats c
-         JOIN chat_member cm ON c.chat_id = cm.chat_id and cm.is_kicked = false
-WHERE cm.user_id =
-            $1`;
+                            THEN (SELECT user_id
+                                  FROM chat_member
+                                  WHERE user_id != $1
+                                    and chat_id = c.chat_id
+                                  LIMIT 1)
+                        ELSE NULL
+                       END
+                       )                               as other_user_id,
+                   (c.created_time AT TIME ZONE 'UTC') as created_time
+            FROM chats c
+                     JOIN chat_member cm ON c.chat_id = cm.chat_id and cm.is_kicked = false
+            WHERE cm.user_id =
+                  $1
+              and cm.is_chat_hidden = false`;
 
         const values = [userId];
         let paramIndex = 2;
@@ -331,11 +301,19 @@ WHERE cm.user_id =
     }
 
     async getChatById(chatId) {
+        let cachedChat = await ApplicationCache.getKeyJson("chat" + chatId);
+        if (cachedChat) return cachedChat;
+
         const query = `SELECT chat_id, chat_name, is_ls, created_time
                        FROM chats
                        WHERE chat_id = $1`;
         const values = [chatId];
         const result = await pool.query(query, values);
+
+        if (result.rows[0]) {
+            await ApplicationCache.setKey("chat" + chatId, JSON.stringify(ChatCacheDTO(result.rows[0])))
+        }
+
         return result.rows[0];
     }
 
@@ -348,6 +326,11 @@ WHERE cm.user_id =
                        GROUP BY c.chat_id`
         const values = [user_id, other_user_id];
         const result = await pool.query(query, values);
+
+        if (result.rows[0]) {
+            await ApplicationCache.setKey("chat" + result.rows[0].chat_id, JSON.stringify(ChatCacheDTO(result.rows[0])))
+        }
+
         return result.rows[0];
     }
 
@@ -368,35 +351,62 @@ WHERE cm.user_id =
         return result.rows[0];
     }
 
+    //valid means sees chat
+    async getValidChatMember(chat_id, user_id) {
+        let chat_member = await this.getChatMember(chat_id, user_id, true);
+        if (chat_member.is_chat_hidden) return undefined;
+        return chat_member;
+    }
+
+    async getWriterChatMember(chat_id, user_id) {
+        let validChatMember = await this.getValidChatMember(chat_id, user_id);
+        if (validChatMember.is_blocked) return undefined;
+        return validChatMember;
+    }
+
     async blockUnblockUserInChat(chat_id, other_user_id, block_state) {
-        const query = "UPDATE chat_member SET is_blocked = $1 WHERE chat_id = $2 and user_id = $3 RETURNING *";
-        const result = await pool.query(query, [block_state, chat_id, other_user_id], true);
 
-        await ApplicationCache.editUserChatMember(chat_id, other_user_id, {
-            user_id: other_user_id,
-            is_blocked: block_state
-        })
+        let callback = async () => {
+            const query = "UPDATE chat_member SET is_blocked = $1 WHERE chat_id = $2 and user_id = $3 RETURNING *";
+            const result = await pool.query(query, [block_state, chat_id, other_user_id], true);
 
-        return result.rows[0];
+            // console.log("CREATING INTERVAL")
+            // await new Promise((res, rej) => {
+            //     setTimeout(res, 15000)
+            // });
+            // console.log("URA INTERVAL FINISHED")
+
+            if (result.rows[0]) {
+                let members = await this.getChatMembers(chat_id, false, false);
+                return {members: members.map(v => ChatMemberCacheDTO(v)), success: true}
+            } else {
+                return {success: false}
+            }
+        }
+
+        let updateRes = await ApplicationCache.updateChatMembers(chat_id, callback);
+        return updateRes.success;
     }
 
 
-    async getChatMembers(chat_id, is_kicked = false) {
-        let cachedMembers = await ApplicationCache.getChatMembers(chat_id, false);
+    async getChatMembers(chat_id, is_kicked = false, cache_on = true, from_master = false) {
+        if (cache_on) {
+            let cachedMembers = await ApplicationCache.getChatMembers(chat_id, false);
 
-        if (cachedMembers) return cachedMembers;
+            if (cachedMembers) return cachedMembers;
+        }
 
-        const query = `
-            SELECT user_id, is_admin, is_blocked
+        let query = `
+            SELECT user_id, is_admin, is_blocked, is_chat_hidden
             FROM chat_member
             WHERE chat_id = $1
               and is_kicked = $2
         `
 
-        const result = await pool.query(query, [chat_id, false]);
+        const result = await pool.query(query, [chat_id, false], from_master);
 
-        if (result.rows.length > 0) {
-            await ApplicationCache.addChatMembers(chat_id, result.rows);
+        if (result.rows.length > 0 && cache_on) {
+            await ApplicationCache.trySetChatMembers(chat_id, result.rows.map(v => ChatMemberCacheDTO(v)));
         }
 
         return result.rows;

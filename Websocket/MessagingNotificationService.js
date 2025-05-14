@@ -15,6 +15,7 @@ import websocketResponseDTO from "./library/websocketResponseDTO.js";
 import CacheConnector from "./library/OnlineCacheConnector.js";
 import onlineCacheConnector from "./library/OnlineCacheConnector.js";
 import RedisBrokerConnector from "./library/brokers/RedisBrokerConnector.js";
+import RabbitMQBrokerConnector from "./library/brokers/RabbitMQBrokerConnector.js";
 
 
 const websocket_instance = Number.parseInt(process.argv[2]) - 1;
@@ -23,7 +24,7 @@ console.log("RUNNING ON PORT", port)
 
 await onlineCacheConnector.clearOnlineCache(websocket_instance);
 
-const brokerConnector = RedisBrokerConnector;
+const brokerConnector = RabbitMQBrokerConnector;
 await brokerConnector.initPublisher();
 
 await setupRedisSubscriptions();
@@ -289,10 +290,10 @@ async function setupRedisSubscriptions() {
                     for (const userConnection of recipientConnections) {
                         let {accessToken, ws, user_id} = userConnection;
 
-                        if (userConnection.ws === null) continue;
+                        if (userConnection.ws === null || userConnection.is_disconnected) continue;
 
                         if (!tokenService.validateAccessToken(accessToken)) {
-                            userConnection.ws = null;
+                            userConnection.is_disconnected = true;
                             console.log(`Disconnecting user ${user_id}: not authorized`);
                             ws.close(4001, "Not_authorized");
                             continue;

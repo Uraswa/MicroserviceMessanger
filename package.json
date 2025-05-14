@@ -16,6 +16,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "amqplib": "^0.10.8",
     "axios": "^1.8.4",
     "bcrypt": "^5.1.1",
     "consistent-hash": "^1.2.2",
@@ -26,7 +27,6 @@
     "express": "^4.21.2",
     "ioredis": "^5.6.1",
     "jsonwebtoken": "^9.0.2",
-    "kafkajs": "^2.2.4",
     "nodemailer": "^6.10.1",
     "pg": "^8.14.1",
     "redis": "^4.7.0",
