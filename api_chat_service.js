@@ -49,15 +49,9 @@ app.post('/api/deleteChat',
     memberDecorator(false),
     ChatsController.deleteChat.bind(ChatsController)
 )
-app.post('/api/blockUnblockUserInChat',
-    chatDecorator(),
-    memberDecorator(false),
-    ChatsController.blockUnblockUserInChat.bind(ChatsController)
-);
 
 app.post('/api/blockUnblockUserInChat',
     chatDecorator(),
-    memberDecorator(false),
     ChatsController.blockUnblockUserInChat.bind(ChatsController)
 )
 

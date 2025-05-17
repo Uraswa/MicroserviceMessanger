@@ -773,7 +773,15 @@ class ChatsController {
         try {
             let chat = req.chat;
             let user_id = req.user.user_id;
-            let member = req.member;
+
+            let member = await ChatsModel.getChatMember(chat.chat_id, req.user.user_id, true);
+            if (!member) {
+                return res.status(200).json({
+                    success: false,
+                    error: "Permission_denied"
+                })
+            }
+
             let {other_user_id, block_state} = req.body;
 
             if (!chat.is_ls && !member.is_admin) {
