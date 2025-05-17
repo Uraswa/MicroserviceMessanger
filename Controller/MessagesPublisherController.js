@@ -1,6 +1,6 @@
 import MessagesModel from "../Model/MessagesModel.js";
 import InnerCommunicationService from "../services/innerCommunicationService.js";
-import brokerConnector from "../Websocket/library/brokers/RabbitMQBrokerConnector.js";
+import ChatMembersNotifier from "../Websocket/library/brokers/ChatMembersNotifier.js";
 
 class MessagesPublisherController {
 
@@ -15,12 +15,17 @@ class MessagesPublisherController {
 
             if (message && message.message_id) {
 
-                let userProfileResp = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id]))}`, 8001)
+                let nickname = "Неизвестно";
+                try {
+                    let userProfileResp = await InnerCommunicationService.get(`/api/profiles/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id]))}`, 8001)
 
-                let nickname = 'Неизвестно'
-                if (userProfileResp.status === 200 && userProfileResp.data.data.profiles && userProfileResp.data.data.profiles.length !== 0) {
-                    nickname = userProfileResp.data.data.profiles[0].nickname;
+                    if (userProfileResp.status === 200 && userProfileResp.data.data.profiles && userProfileResp.data.data.profiles.length !== 0) {
+                        nickname = userProfileResp.data.data.profiles[0].nickname;
+                    }
+                } catch (e) {
+                    console.log(e);
                 }
+
 
                 let brokerResponse = {
                     type: "sendMessage",
@@ -34,7 +39,7 @@ class MessagesPublisherController {
                     }
                 };
 
-                await brokerConnector.sendToAllChatMembers(brokerResponse, chat_id, user_id, false);
+                await ChatMembersNotifier.sendToAllChatMembers(brokerResponse, chat_id, user_id, false);
                 return res.status(200).json(brokerResponse);
             }
         } catch (e) {
@@ -75,7 +80,7 @@ class MessagesPublisherController {
                     success: true,
                     data: response
                 };
-                await brokerConnector.sendToAllChatMembers(brokerResponse, chat_id, user_id, false);
+                await ChatMembersNotifier.sendToAllChatMembers(brokerResponse, chat_id, user_id, false);
                 return res.status(200).json(brokerResponse);
             }
         } catch (e) {
@@ -103,7 +108,7 @@ class MessagesPublisherController {
                     }
                 };
 
-                await brokerConnector.sendToAllChatMembers(brokerResponse, chat_id, user_id, false);
+                await ChatMembersNotifier.sendToAllChatMembers(brokerResponse, chat_id, user_id, false);
                 return res.status(200).json(brokerResponse);
             }
         } catch (e) {
@@ -139,7 +144,7 @@ class MessagesPublisherController {
                     chat_id: chat_id
                 }
             };
-            await brokerConnector.sendToAllChatMembers(brokerResponse, chat_id, user_id, false);
+            await ChatMembersNotifier.sendToAllChatMembers(brokerResponse, chat_id, user_id, false);
             return res.status(200).json(brokerResponse);
         } catch (e) {
             console.log(e);

@@ -61,8 +61,13 @@ class MessagesSearcherController {
                 });
             }
 
-            let result = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([msg.user_id]))}`, 8001)
-            let userProfiles = result.data.data.profiles;
+            let userProfiles = {};
+            try {
+                let result = await InnerCommunicationService.get(`/api/profiles/getUserProfilesByIds?ids=${JSON.stringify(Array.from([msg.user_id]))} `)
+                userProfiles = result.data.data.profiles;
+            } catch (e) {
+
+            }
 
             return res.status(200).json({
                 success: true,

@@ -6,7 +6,7 @@ import {WebSocketServer} from "ws";
 import tokenService from "../services/tokenService.js";
 import CacheConnector from "./library/OnlineCacheConnector.js";
 import onlineCacheConnector from "./library/OnlineCacheConnector.js";
-import RabbitMQBrokerConnector from "./library/brokers/RabbitMQBrokerConnector.js";
+import RealTimeNotifier from "./library/brokers/RealTimeNotifier.js";
 
 
 const websocket_instance = Number.parseInt(process.argv[2]) - 1;
@@ -14,9 +14,6 @@ let port = 8080 + websocket_instance;
 console.log("RUNNING ON PORT", port)
 
 await onlineCacheConnector.clearOnlineCache(websocket_instance);
-
-const brokerConnector = RabbitMQBrokerConnector;
-await brokerConnector.initPublisher();
 
 await setupRedisSubscriptions();
 
@@ -110,9 +107,8 @@ wss.on('connection', (ws, req) => {
 });
 
 async function setupRedisSubscriptions() {
-    await brokerConnector.initSubscriber();
 
-    await brokerConnector.brokerSubscribe('ws' + websocket_instance, (message, channel) => {
+    await RealTimeNotifier.brokerSubscribe('ws' + websocket_instance, (message, channel) => {
         try {
             const msg = JSON.parse(message);
             const recipientIds = msg.recipient_ids;

@@ -41,6 +41,7 @@ class ChatToShardModel {
 
     }
 
+
     async getShard(chatId) {
         let cachedShardIndex = SHARDS_CACHE.get(chatId);
         if (cachedShardIndex) {
@@ -55,6 +56,10 @@ class ChatToShardModel {
 
     async getShardByIndex(index) {
         return SHARDS[index];
+    }
+
+    async deleteChatShardInfo(chat_id) {
+        await pool.query('DELETE FROM chats_to_shard WHERE chat_id = $1', [chat_id], true);
     }
 
 

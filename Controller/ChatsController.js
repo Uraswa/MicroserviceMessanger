@@ -1,20 +1,29 @@
 import ChatsModel from "../Model/ChatsModel.js";
 import InnerCommunicationService from "../services/innerCommunicationService.js";
-import RabbitMQBrokerConnector from "../Websocket/library/brokers/RabbitMQBrokerConnector.js";
+import ChatMembersNotifier from "../Websocket/library/brokers/ChatMembersNotifier.js";
+import RabbitMQConnector from "../Websocket/library/brokers/RabbitMQConnector.js";
 
-const brokerConnector = RabbitMQBrokerConnector;
-await brokerConnector.initPublisher();
+let channel = await RabbitMQConnector.connection.createChannel();
+await channel.assertQueue('chat.delete.event', {durable: false});
+
 
 class ChatsController {
 
     async getProfile(user_id) {
         //let response = await axios.get(`http://localhost:8001/api/getProfile?user_id=${user_id}`);
-        let response = await InnerCommunicationService.get(`/api/getProfile?user_id=${user_id}`, 8001);
-        if (response.status === 200) {
-            return response.data.data;
-        } else {
-            return undefined;
+        try {
+            let response = await InnerCommunicationService.get(`/api/profiles/getProfile?user_id=${user_id}`);
+            if (response.status === 200) {
+                return response.data.data;
+            } else {
+                return undefined;
+            }
+        } catch (e) {
+            console.log(e);
         }
+
+        return undefined;
+
     }
 
     async leaveChat(req, res) {
@@ -24,6 +33,13 @@ class ChatsController {
 
             let chatParticipants = await ChatsModel.getChatParticipants(chat_id);
             let leaveChatResult = await ChatsModel.leaveChat(user_id, chat_id);
+
+            if (leaveChatResult.wasChatDeleted) {
+                channel.sendToQueue('chat.delete.event', Buffer.from(JSON.stringify(
+                    {chat_id: chat_id}
+                )))
+            }
+
             if (leaveChatResult) {
                 let response = {
                     type: "chatMemberLeaved",
@@ -33,7 +49,7 @@ class ChatsController {
                         user_id: user_id
                     }
                 };
-                await brokerConnector.sendToAllChatMembers(response, chat_id, user_id, false, chatParticipants);
+                await ChatMembersNotifier.sendToAllChatMembers(response, chat_id, user_id, false, chatParticipants);
                 return res.status(200).json(response);
             }
         } catch (e) {
@@ -70,7 +86,7 @@ class ChatsController {
                         user_id: other_user_id
                     }
                 };
-                await brokerConnector.sendToAllChatMembers(response, chat_id, self_userid, false, chatParticipants);
+                await ChatMembersNotifier.sendToAllChatMembers(response, chat_id, self_userid, false, chatParticipants);
                 return res.status(200).json(response);
             }
         } catch (e) {
@@ -230,15 +246,22 @@ class ChatsController {
                 });
             }
 
-            const messagesReq = InnerCommunicationService.get("/api/getMessages?chat_id=" + chat_id, 8003);
             const members = await ChatsModel.getChatMembers(chat_id);
 
-            let messagesResponse = await messagesReq;
             let messages = [];
+            try {
+                const messagesReq = InnerCommunicationService.get("/api/messages/getMessages?chat_id=" + chat_id);
 
-            if (messagesResponse.status === 200 && messagesResponse.data.success) {
-                messages = messagesResponse.data.data;
+
+                let messagesResponse = await messagesReq;
+
+                if (messagesResponse.status === 200 && messagesResponse.data.success) {
+                    messages = messagesResponse.data.data;
+                }
+            } catch (e) {
+                console.log(e);
             }
+
 
             let userIds = new Set();
             for (let message of messages) {
@@ -252,9 +275,15 @@ class ChatsController {
                 userIds.add(member.user_id)
             }
 
-            let profiles = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(userIds))}`, 8001)
+            let profiles = [];
+            let userProfiles = [];
+            try {
+                profiles = await InnerCommunicationService.get(`/api/profiles/getUserProfilesByIds?ids=${JSON.stringify(Array.from(userIds))}`)
+                userProfiles = profiles.data.data.profiles;
+            } catch (e) {
+                console.log(e);
+            }
 
-            let userProfiles = profiles.data.data.profiles;
 
             return res.status(200).json({
                 success: true,
@@ -313,7 +342,7 @@ class ChatsController {
                     });
                 }
 
-                await brokerConnector.sendToAllChatMembers({
+                await ChatMembersNotifier.sendToAllChatMembers({
                     type: "chatMemberJoined",
                     success: true,
                     data: {
@@ -322,6 +351,23 @@ class ChatsController {
                         nickname: profile.nickname
                     }
                 }, chat.chat_id, user.user_id, false);
+
+                let chatInfo = {};
+                try {
+                    let filters = JSON.stringify({chat_id: chat.chat_id});
+                    let chatInfoResponse = await InnerCommunicationService.get('/api/chats/getChats?filters='+ filters);
+                    if (chatInfoResponse.status === 200 && chatInfoResponse.data.success) {
+                        chatInfo =  chatInfoResponse.data.data;
+                    }
+                } catch (e) {
+                    console.log(e);
+                }
+
+                await ChatMembersNotifier.sendToExactMember({
+                    type: "joinChat",
+                    data: chatInfo
+                }, user.user_id);
+
                 return res.status(200).json({
                     success: true
                 });
@@ -344,6 +390,10 @@ class ChatsController {
                 filters = JSON.parse(req.query.filters)
             }
 
+            if (user.is_server) {
+                user.user_id = filters.user_id
+            }
+
             const chats = await ChatsModel.getChats(user.user_id, filters);
 
             let chatIds = [];
@@ -358,32 +408,44 @@ class ChatsController {
                 if (chat.other_user_id) usersIds.add(chat.other_user_id);
             }
 
-            let messagesResponse = await InnerCommunicationService.post('/api/getLastMessageByChat', {
-                chatsIds: chatIds
-            }, 8003);
+            try {
+                let messagesResponse = await InnerCommunicationService.post('/api/messages/getLastMessageByChat', {
+                    chatsIds: chatIds
+                });
 
-            if (messagesResponse.status === 200 && messagesResponse.data.success) {
-                let messages = messagesResponse.data.data;
+                if (messagesResponse.status === 200 && messagesResponse.data.success) {
+                    let messages = messagesResponse.data.data;
 
-                for (let msg of messages) {
-                    let chat = chatsMap.get(msg.chat_id);
-                    if (!chat) continue;
+                    for (let msg of messages) {
+                        let chat = chatsMap.get(msg.chat_id);
+                        if (!chat) continue;
 
-                    chat.last_message_id = msg.message_id;
-                    chat.last_message_text = msg.text;
-                    chat.last_message_user_id = msg.user_id;
-                    chat.last_message_timestamp = msg.created_time;
+                        chat.last_message_id = msg.message_id;
+                        chat.last_message_text = msg.text;
+                        chat.last_message_user_id = msg.user_id;
+                        chat.last_message_timestamp = msg.created_time;
 
-                    if (chat.last_message_user_id) usersIds.add(chat.last_message_user_id);
+                        if (chat.last_message_user_id) usersIds.add(chat.last_message_user_id);
+
+                    }
 
                 }
-
+            } catch (e) {
+                console.log(e);
             }
+
 
             let userProfiles = [];
             if (usersIds.size) {
-                let result = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from(usersIds))}`, 8001)
-                userProfiles = result.data.data.profiles;
+
+                try {
+                    let result = await InnerCommunicationService.get(`/api/profiles/getUserProfilesByIds?ids=${JSON.stringify(Array.from(usersIds))}`)
+                    userProfiles = result.data.data.profiles;
+                } catch (e) {
+                    console.log(e)
+                }
+
+
             }
 
             return res.status(200).json({
@@ -427,7 +489,7 @@ class ChatsController {
                 });
             }
 
-            inviteLink = "http://"+process.env.API_URL+"/joinChat/" + inviteLink;
+            inviteLink = "http://" + process.env.API_URL + "/joinChat/" + inviteLink;
 
             return res.status(200).json({
                 success: true,
@@ -452,7 +514,7 @@ class ChatsController {
             let {chat_name, other_user_id} = req.body;
             if (other_user_id) {
 
-                let otherUserResponse = await InnerCommunicationService.get('/api/doesUserExist?user_id=' + other_user_id, 8002);
+                let otherUserResponse = await InnerCommunicationService.get('/api/users/doesUserExist?user_id=' + other_user_id);
                 if (otherUserResponse.status !== 200 || !otherUserResponse.data.success || !otherUserResponse.data.data.exist) {
 
                     return res.status(200).json({
@@ -471,7 +533,7 @@ class ChatsController {
                 let privateChatRes = await ChatsModel.createPrivateChat(user_id, other_user_id)
                 if (privateChatRes) {
 
-                    let userProfileResp = await InnerCommunicationService.get(`/api/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id, other_user_id]))}`, 8001)
+                    let userProfileResp = await InnerCommunicationService.get(`/api/profiles/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id, other_user_id]))}`)
 
                     let nickname1 = "";
                     let nickname2 = "";
@@ -489,7 +551,7 @@ class ChatsController {
                     }
 
 
-                    let promise1 = brokerConnector.sendToExactMember({
+                    let promise1 = ChatMembersNotifier.sendToExactMember({
                         type: "createChat",
                         success: true,
                         data: {
@@ -513,7 +575,7 @@ class ChatsController {
                         }
                     };
 
-                    let promise2 = brokerConnector.sendToExactMember(response, user_id);
+                    let promise2 = ChatMembersNotifier.sendToExactMember(response, user_id);
 
 
                     await promise1;
@@ -543,7 +605,7 @@ class ChatsController {
                             is_ls: false
                         }
                     }
-                    await brokerConnector.sendToAllChatMembers(response, result.chat_id, user_id, false);
+                    await ChatMembersNotifier.sendToAllChatMembers(response, result.chat_id, user_id, false);
                     return res.status(200).json(response);
                 }
             }
@@ -593,7 +655,7 @@ class ChatsController {
                         chat_name: newchat_name
                     }
                 }
-                await brokerConnector.sendToAllChatMembers(response, chat.chat_id, user_id, false);
+                await ChatMembersNotifier.sendToAllChatMembers(response, chat.chat_id, user_id, false);
                 return res.status(200).json(response);
             }
         } catch (e) {
@@ -608,9 +670,56 @@ class ChatsController {
 
     }
 
+    async unhideChat(req, res){
+        try {
+            let chat = req.chat;
+            let user_id = req.user.user_id;
+
+            let chatMember = await ChatsModel.getChatMember(chat.chat_id, user_id, true);
+            if (!chat.is_ls || !chatMember || !chatMember.is_chat_hidden || chatMember.is_blocked) {
+                return res.status(200).json({
+                    success: false,
+                    error: "Permission_denied"
+                })
+            }
+
+            let unhideRes = await ChatsModel.unhidePrivateChat(chat.chat_id);
+            if (unhideRes) {
+
+                let chatInfo = {};
+                try {
+                    let filters = JSON.stringify({chat_id: chat.chat_id, user_id: user_id});
+                    let chatInfoResponse = await InnerCommunicationService.get('/api/chats/getChats?filters='+ filters);
+                    if (chatInfoResponse.status === 200 && chatInfoResponse.data.success) {
+                        chatInfo =  chatInfoResponse.data.data;
+                    }
+                } catch (e) {
+                    console.log(e);
+                }
+
+                await ChatMembersNotifier.sendToAllChatMembers({
+                    type: "joinChat",
+                    data: chatInfo
+                }, chat.chat_id, user_id);
+
+
+                return res.status(200).json({
+                    success: true
+                })
+            }
+        } catch (e) {
+            console.log(e);
+        }
+
+        return res.status(200).json({
+            success: false,
+            error: "Unknown_error"
+        });
+    }
+
     async deleteChat(req, res) {
 
-        //TODO при удалении чата прокинуть ивент в брокер
+
         try {
             let chat = req.chat;
             let user_id = req.user.user_id;
@@ -625,7 +734,19 @@ class ChatsController {
             }
 
             let chatParticipants = await ChatsModel.getChatParticipants(chat.chat_id);
-            let result = await ChatsModel.deleteGroupChat(chat.chat_id, user_id);
+
+            let result = false;
+            if (chat.is_ls) {
+                result = await ChatsModel.deletePrivateChat(chat.chat_id);
+            } else {
+                result = await ChatsModel.deleteGroupChat(chat.chat_id);
+            }
+
+            channel.sendToQueue('chat.delete.event', Buffer.from(JSON.stringify(
+                {chat_id: chat.chat_id}
+            )))
+
+
             if (result) {
                 let response = {
                     type: "deleteChat",
@@ -634,7 +755,7 @@ class ChatsController {
                         chat_id: chat.chat_id
                     }
                 };
-                await brokerConnector.sendToAllChatMembers(response, chat.chat_id, user_id, false, chatParticipants)
+                await ChatMembersNotifier.sendToAllChatMembers(response, chat.chat_id, user_id, false, chatParticipants)
                 return res.status(200).json(response);
             }
         } catch (e) {
@@ -698,7 +819,7 @@ class ChatsController {
                 }
             };
 
-            await brokerConnector.sendToAllChatMembers(response, chat.chat_id, user_id, false);
+            await ChatMembersNotifier.sendToAllChatMembers(response, chat.chat_id, user_id, false);
             return res.status(200).json(response);
         } catch (e) {
             console.log(e);

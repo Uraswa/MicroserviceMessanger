@@ -9,7 +9,7 @@ class InnerCommunicationService {
     init() {
         this.api = axios.create({
             withCredentials: true,
-            baseURL: "http://localhost"
+            baseURL: "http://212.33.245.152"
         });
 
         let $api = this.api;
@@ -18,11 +18,6 @@ class InnerCommunicationService {
         this.api.interceptors.request.use((config) => {
             config.headers.Authorization = `Bearer ${communicationService.serverAccessToken}`;
 
-            if (config.port) {
-                config.baseURL = `http://localhost:${config.port}`;
-                delete config.port; // Удаляем, чтобы не мешал
-            }
-
             return config;
         });
 
@@ -30,7 +25,7 @@ class InnerCommunicationService {
             return config;
         }, async (error) => {
             const originalRequest = error.config;
-            if (error.response.status === 401 && error.config && !error.config._isRetry) {
+            if (error.response && error.response.status === 401 && error.config && !error.config._isRetry) {
                 originalRequest._isRetry = true;
                 communicationService._validateCredentials();
                 try {
@@ -53,15 +48,15 @@ class InnerCommunicationService {
 
     }
 
-    async post(endPoint, data, port) {
+    async post(endPoint, data) {
         this._validateCredentials();
 
-        return await this.api.post(endPoint, data, {port});
+        return await this.api.post(endPoint, data);
     }
 
-    async get(endPoint, port) {
+    async get(endPoint) {
         this._validateCredentials();
-        return await this.api.get(endPoint, {port});
+        return await this.api.get(endPoint);
     }
 
 }

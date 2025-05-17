@@ -53,6 +53,17 @@ app.post('/api/blockUnblockUserInChat',
     chatDecorator(),
     memberDecorator(false),
     ChatsController.blockUnblockUserInChat.bind(ChatsController)
+);
+
+app.post('/api/blockUnblockUserInChat',
+    chatDecorator(),
+    memberDecorator(false),
+    ChatsController.blockUnblockUserInChat.bind(ChatsController)
+)
+
+app.post('/api/unhideChat',
+    chatDecorator(),
+    ChatsController.unhideChat.bind(ChatsController)
 )
 
 app.get('/api/getChatMembers', ChatsController.getChatMembers.bind(ChatsController))
