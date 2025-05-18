@@ -299,6 +299,93 @@ class ChatsController {
         })
     }
 
+    async addMemberToChat(req, res) {
+        const user = req.user;
+        try {
+
+            if (!user.is_company) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'access denied'
+                });
+            }
+
+            let {user_id, chat_id} = req.body;
+
+            let chat = await ChatsModel.getChatById(chat_id);
+            if (chat.company_id != req.user.company_id) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'access denied'
+                });
+            }
+
+            let otherUserResponse = await InnerCommunicationService.get('/api/users/doesUserExist?user_id=' + user_id);
+            if (otherUserResponse.status !== 200 || !otherUserResponse.data.success || !otherUserResponse.data.data.exist || otherUserResponse.data.data.company_id != req.user.company_id) {
+
+                return res.status(200).json({
+                    success: false,
+                    error: "User_not_exists"
+                })
+            }
+
+            let joinRes = await ChatsModel.addChatMemberToChat(user_id, chat_id, req.user.user_id);
+            if (joinRes) {
+                return await this._workChatJoined(user, chat, res);
+            }
+
+
+        } catch (e) {
+            console.log(e)
+        }
+
+        return res.status(200).json({
+            success: false,
+            error: "Unknown_error"
+        })
+    }
+
+    async _workChatJoined(user, chat, res) {
+        let profile = await this.getProfile(user.user_id);
+
+        if (!profile) {
+            return res.status(500).json({
+                success: false,
+                error: "Произошла ошибка"
+            });
+        }
+
+        await ChatMembersNotifier.sendToAllChatMembers({
+            type: "chatMemberJoined",
+            success: true,
+            data: {
+                chat_id: chat.chat_id,
+                user_id: user.user_id,
+                nickname: profile.nickname
+            }
+        }, chat.chat_id, user.user_id, false);
+
+        let chatInfo = {};
+        try {
+            let filters = JSON.stringify({chat_id: chat.chat_id});
+            let chatInfoResponse = await InnerCommunicationService.get('/api/chats/getChats?filters=' + filters);
+            if (chatInfoResponse.status === 200 && chatInfoResponse.data.success) {
+                chatInfo = chatInfoResponse.data.data;
+            }
+        } catch (e) {
+            console.log(e);
+        }
+
+        await ChatMembersNotifier.sendToExactMember({
+            type: "joinChat",
+            data: chatInfo
+        }, user.user_id);
+
+        return res.status(200).json({
+            success: true
+        });
+    }
+
     async joinChat(req, res) {
         const user = req.user;
         try {
@@ -312,7 +399,7 @@ class ChatsController {
             }
 
             let chat = await ChatsModel.getChatById(chat_id);
-            if (!chat) {
+            if (!chat || chat.company_id != req.user.company_id) {
                 return res.status(404).json({
                     success: false,
                     error: "Чат не найден"
@@ -333,44 +420,7 @@ class ChatsController {
                     error: "Чат не найден"
                 });
             } else if (joinRes.joined) {
-                let profile = await this.getProfile(user.user_id);
-
-                if (!profile) {
-                    return res.status(500).json({
-                        success: false,
-                        error: "Произошла ошибка"
-                    });
-                }
-
-                await ChatMembersNotifier.sendToAllChatMembers({
-                    type: "chatMemberJoined",
-                    success: true,
-                    data: {
-                        chat_id: chat.chat_id,
-                        user_id: user.user_id,
-                        nickname: profile.nickname
-                    }
-                }, chat.chat_id, user.user_id, false);
-
-                let chatInfo = {};
-                try {
-                    let filters = JSON.stringify({chat_id: chat.chat_id});
-                    let chatInfoResponse = await InnerCommunicationService.get('/api/chats/getChats?filters='+ filters);
-                    if (chatInfoResponse.status === 200 && chatInfoResponse.data.success) {
-                        chatInfo =  chatInfoResponse.data.data;
-                    }
-                } catch (e) {
-                    console.log(e);
-                }
-
-                await ChatMembersNotifier.sendToExactMember({
-                    type: "joinChat",
-                    data: chatInfo
-                }, user.user_id);
-
-                return res.status(200).json({
-                    success: true
-                });
+                return await this._workChatJoined(user, chat, res)
             }
         } catch (e) {
             console.log(e)
@@ -515,7 +565,7 @@ class ChatsController {
             if (other_user_id) {
 
                 let otherUserResponse = await InnerCommunicationService.get('/api/users/doesUserExist?user_id=' + other_user_id);
-                if (otherUserResponse.status !== 200 || !otherUserResponse.data.success || !otherUserResponse.data.data.exist) {
+                if (otherUserResponse.status !== 200 || !otherUserResponse.data.success || !otherUserResponse.data.data.exist || otherUserResponse.data.data.company_id != req.user.company_id) {
 
                     return res.status(200).json({
                         success: false,
@@ -530,7 +580,7 @@ class ChatsController {
                     })
                 }
 
-                let privateChatRes = await ChatsModel.createPrivateChat(user_id, other_user_id)
+                let privateChatRes = await ChatsModel.createPrivateChat(user_id, other_user_id, req.user.company_id)
                 if (privateChatRes) {
 
                     let userProfileResp = await InnerCommunicationService.get(`/api/profiles/getUserProfilesByIds?ids=${JSON.stringify(Array.from([user_id, other_user_id]))}`)
@@ -594,7 +644,7 @@ class ChatsController {
                     })
                 }
 
-                let result = await ChatsModel.createGroupChat(user_id, chat_name);
+                let result = await ChatsModel.createGroupChat(user_id, chat_name, req.user.company_id);
                 if (result) {
                     let response = {
                         type: "createChat",
@@ -670,7 +720,7 @@ class ChatsController {
 
     }
 
-    async unhideChat(req, res){
+    async unhideChat(req, res) {
         try {
             let chat = req.chat;
             let user_id = req.user.user_id;
@@ -689,9 +739,9 @@ class ChatsController {
                 let chatInfo = {};
                 try {
                     let filters = JSON.stringify({chat_id: chat.chat_id, user_id: user_id});
-                    let chatInfoResponse = await InnerCommunicationService.get('/api/chats/getChats?filters='+ filters);
+                    let chatInfoResponse = await InnerCommunicationService.get('/api/chats/getChats?filters=' + filters);
                     if (chatInfoResponse.status === 200 && chatInfoResponse.data.success) {
-                        chatInfo =  chatInfoResponse.data.data;
+                        chatInfo = chatInfoResponse.data.data;
                     }
                 } catch (e) {
                     console.log(e);
