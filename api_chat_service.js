@@ -25,6 +25,7 @@ app.disable('etag');
 app.get('/api/getChats', ChatsController.getChats.bind(ChatsController));
 app.get('/api/getChatInfo', ChatsController.getChatInfo.bind(ChatsController));
 app.get('/api/joinChat', ChatsController.joinChat.bind(ChatsController));
+app.post('/api/addMemberToChat', ChatsController.addMemberToChat.bind(ChatsController));
 app.get('/api/getOrCreateInvitationLink', ChatsController.getOrCreateInvitationLink.bind(ChatsController));
 
 app.post('/api/leaveChat',

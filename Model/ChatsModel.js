@@ -22,16 +22,16 @@ class ChatsModel {
         return members.map(v => v['user_id']);
     }
 
-    async createPrivateChat(userId1, userId2) {
+    async createPrivateChat(userId1, userId2, company_id) {
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
 
 
             const chatResult = await client.query(
-                `INSERT INTO chats (chat_name, is_ls)
-                 VALUES ('', true)
-                 RETURNING chat_id`
+                `INSERT INTO chats (chat_name, is_ls, company_id)
+                 VALUES ('', true, $1)
+                 RETURNING chat_id`, [company_id]
             );
             const chatId = chatResult.rows[0].chat_id;
 
@@ -54,16 +54,16 @@ class ChatsModel {
         }
     }
 
-    async createGroupChat(creatorId, chatName) {
+    async createGroupChat(creatorId, chatName, company_id) {
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
 
             const chatResult = await client.query(
-                `INSERT INTO chats (chat_name, is_ls)
-                 VALUES ($1, false)
+                `INSERT INTO chats (chat_name, is_ls, company_id)
+                 VALUES ($1, false, $2)
                  RETURNING chat_id`,
-                [chatName]
+                [chatName, company_id]
             );
             const chatId = chatResult.rows[0].chat_id;
 
@@ -206,6 +206,23 @@ class ChatsModel {
         const result = await pool.query(query, [link]);
         if (result.rows[0]) return result.rows[0].chat_id;
         return undefined;
+    }
+
+    async addChatMemberToChat(user_id, chat_id, inviter_id) {
+        let callback = async () => {
+
+            await pool.query(
+                `INSERT INTO chat_member (chat_id, user_id, invited_by)
+                 VALUES ($1, $2, $3)`,
+                [chat_id, user_id, inviter_id], true
+            );
+
+            let members = await this.getChatMembers(chat_id, false, false, true);
+            return {members: members.map(v => ChatMemberCacheDTO(v)), success: true}
+        }
+
+        let result = await ApplicationCache.updateChatMembers(chat_id, callback);
+        return result.success;
     }
 
 
@@ -397,7 +414,7 @@ class ChatsModel {
               and cm.is_chat_hidden = false`;
 
         const values = [userId];
-        let paramIndex = 2;
+        let paramIndex = values.length + 1;
 
         if (filters.isLs !== undefined) {
             query += ` AND c.is_ls = $${paramIndex}`;
@@ -427,7 +444,7 @@ class ChatsModel {
         // let cachedChat = await ApplicationCache.getKeyJson("chat" + chatId);
         // if (cachedChat) return cachedChat;
 
-        const query = `SELECT chat_id, chat_name, is_ls, created_time
+        const query = `SELECT chat_id, chat_name, is_ls, created_time, company_id
                        FROM chats
                        WHERE chat_id = $1`;
         const values = [chatId];
