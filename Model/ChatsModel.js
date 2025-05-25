@@ -231,7 +231,7 @@ class ChatsModel {
 
             await pool.query(
                 `INSERT INTO chat_member (chat_id, user_id, invited_by)
-                 VALUES ($1, $2, $3)`,
+                 VALUES ($1, $2, $3) ON CONFLICT (chat_id, user_id) DO UPDATE SET is_chat_hidden = false`,
                 [chat_id, userId, inviter_id], true
             );
 

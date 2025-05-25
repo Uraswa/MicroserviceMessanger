@@ -9,10 +9,10 @@ await channel.assertQueue('chat.delete.event', {durable: false});
 
 class ChatsController {
 
-    async getProfile(user_id) {
+    async getProfile(user_id, company_id) {
         //let response = await axios.get(`http://localhost:8001/api/getProfile?user_id=${user_id}`);
         try {
-            let response = await InnerCommunicationService.get(`/api/profiles/getProfile?user_id=${user_id}`);
+            let response = await InnerCommunicationService.get(`/api/profiles/getProfile?user_id=${user_id}&company_id=${company_id}`);
             if (response.status === 200) {
                 return response.data.data;
             } else {
@@ -331,7 +331,7 @@ class ChatsController {
 
             let joinRes = await ChatsModel.addChatMemberToChat(user_id, chat_id, req.user.user_id);
             if (joinRes) {
-                return await this._workChatJoined(user, chat, res);
+                return await this._workChatJoined({user_id: user_id}, chat, req.user.company_id, res);
             }
 
 
@@ -345,8 +345,8 @@ class ChatsController {
         })
     }
 
-    async _workChatJoined(user, chat, res) {
-        let profile = await this.getProfile(user.user_id);
+    async _workChatJoined(user, chat, company_id, res) {
+        let profile = await this.getProfile(user.user_id, company_id);
 
         if (!profile) {
             return res.status(500).json({
@@ -367,11 +367,10 @@ class ChatsController {
 
         let chatInfo = {};
         try {
-            let filters = JSON.stringify({chat_id: chat.chat_id});
-            let chatInfoResponse = await InnerCommunicationService.get('/api/chats/getChats?filters=' + filters);
-            if (chatInfoResponse.status === 200 && chatInfoResponse.data.success) {
-                chatInfo = chatInfoResponse.data.data;
-            }
+            let chats = await ChatsModel.getChats(user.user_id, {chat_id: chat.chat_id});
+
+            let chatsResult = await this._workChats(chats);
+            chatInfo = chatsResult ? chatsResult : {};
         } catch (e) {
             console.log(e);
         }
@@ -407,7 +406,7 @@ class ChatsController {
             }
 
             let member = await ChatsModel.getChatMember(chat_id, user.user_id, false);
-            if (member) {
+            if (member && !member.is_chat_hidden) {
                 return res.status(200).json({
                     success: true
                 });
@@ -420,7 +419,7 @@ class ChatsController {
                     error: "Чат не найден"
                 });
             } else if (joinRes.joined) {
-                return await this._workChatJoined(user, chat, res)
+                return await this._workChatJoined(user, chat, req.user.company_id, res)
             }
         } catch (e) {
             console.log(e)
@@ -432,19 +431,8 @@ class ChatsController {
         })
     }
 
-    async getChats(req, res) {
-        const user = req.user;
+    async _workChats(chats) {
         try {
-            let filters = {}
-            if (req.query.filters) {
-                filters = JSON.parse(req.query.filters)
-            }
-
-            if (user.is_server) {
-                user.user_id = filters.user_id
-            }
-
-            const chats = await ChatsModel.getChats(user.user_id, filters);
 
             let chatIds = [];
             let chatsMap = new Map();
@@ -498,9 +486,40 @@ class ChatsController {
 
             }
 
+            return {chats, userProfiles}
+
+        } catch (e) {
+            console.log(e);
+        }
+
+        return false;
+    }
+
+    async getChats(req, res) {
+        const user = req.user;
+        try {
+            let filters = {}
+            if (req.query.filters) {
+                filters = JSON.parse(req.query.filters)
+            }
+
+            if (user.is_server) {
+                user.user_id = filters.user_id
+            }
+
+            const chats = await ChatsModel.getChats(user.user_id, filters);
+
+            let endpointResult = await this._workChats(chats);
+            if (!endpointResult) {
+                return res.status(200).json({
+                    success: false,
+                    error: "Unknown_error"
+                })
+            }
+
             return res.status(200).json({
                 success: true,
-                data: {chats, userProfiles}
+                data: endpointResult
             });
         } catch (e) {
             console.log(e)
@@ -738,11 +757,26 @@ class ChatsController {
 
                 let chatInfo = {};
                 try {
-                    let filters = JSON.stringify({chat_id: chat.chat_id, user_id: user_id});
-                    let chatInfoResponse = await InnerCommunicationService.get('/api/chats/getChats?filters=' + filters);
-                    if (chatInfoResponse.status === 200 && chatInfoResponse.data.success) {
-                        chatInfo = chatInfoResponse.data.data;
+
+                    let chats = await ChatsModel.getChats(user_id, {chat_id: chat.chat_id});
+
+                    if (!chats) {
+                        return res.status(200).json({
+                            success: false,
+                            error: "Unknown_error"
+                        });
                     }
+
+                    let chatsResult = await this._workChats(chats);
+
+                    if (!chatsResult) {
+                        return res.status(200).json({
+                            success: false,
+                            error: "Unknown_error"
+                        });
+                    }
+
+                    chatInfo = chatsResult;
                 } catch (e) {
                     console.log(e);
                 }
