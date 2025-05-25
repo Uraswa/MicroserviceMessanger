@@ -113,43 +113,57 @@ class ChatsModel {
         let wasChatDeleted = false;
 
         let callback = async () => {
+            let result =  undefined;
+            const client = await pool.connect();
+            try {
+                client.query('BEGIN');
 
-            const leaveResult = await pool.query(
-                `UPDATE chat_member
-                 SET is_chat_hidden = TRUE
-                 WHERE user_id = $1
-                   and chat_id = $2
-                 RETURNING *`, [userId, chatId], true
-            );
+                const leaveResult = await client.query(
+                    `UPDATE chat_member
+                     SET is_chat_hidden = TRUE
+                     WHERE user_id = $1
+                       and chat_id = $2
+                     RETURNING *`, [userId, chatId]
+                );
 
+                if (leaveResult.rows[0]) {
+                    let members = await this.getChatMembers(chatId, false, false, false, client);
 
-            if (leaveResult.rows[0]) {
-                let members = await this.getChatMembers(chatId, false, false, true);
+                    let activeChatMembers = 0;
+                    for (let member of members) {
+                        if (member.is_chat_hidden || member.is_kicked) continue;
+                        activeChatMembers = 1;
+                        break;
+                    }
 
-                let activeChatMembers = 0;
-                for (let member of members) {
-                    if (member.is_chat_hidden || member.is_kicked) continue;
-                    activeChatMembers = 1;
-                    break;
+                    //нужно удалить чат
+                    if (activeChatMembers === 0) {
+                        await client.query(`DELETE
+                                            FROM chats
+                                            WHERE chat_id = $1`, [chatId]);
+                        wasChatDeleted = true;
+
+                        result ={success: true, members: []}
+                    } else {
+                        result =  {members: members.map(v => ChatMemberCacheDTO(v)), success: true}
+                    }
+                } else {
+                    client.query('ROLLBACK');
+                    result = {
+                        success: false
+                    }
                 }
 
-                //нужно удалить чат
-                if (activeChatMembers === 0) {
-                    let deleteRes = await pool.query(`DELETE
-                                                      FROM chats
-                                                      WHERE chat_id = $1`, [chatId], true);
-                    wasChatDeleted = true;
-
-                    return {success: true, members: []}
-                }
-
-
-                return {members: members.map(v => ChatMemberCacheDTO(v)), success: true}
-            } else {
-                return {
-                    success: false
-                }
+                if (result.success) client.query('COMMIT');
+            } catch (e) {
+                client.query('ROLLBACK');
+            } finally {
+                client.release();
             }
+
+            return result;
+
+
         }
 
         let result = await ApplicationCache.updateChatMembers(chatId, callback);
@@ -254,7 +268,7 @@ class ChatsModel {
                 client.query('BEGIN');
                 let unhideRes = await client.query(`UPDATE chat_member
                                                     SET is_chat_hidden = FALSE
-                                                    WHERE chat_id = $1 
+                                                    WHERE chat_id = $1
                                                     RETURNING *`, [chat_id])
                 if (unhideRes.rows.length !== 2) {
                     client.query('ROLLBACK');
@@ -515,7 +529,7 @@ class ChatsModel {
     }
 
 
-    async getChatMembers(chat_id, is_kicked = false, cache_on = true, from_master = false) {
+    async getChatMembers(chat_id, is_kicked = false, cache_on = true, from_master = false, from_client = null) {
         if (cache_on) {
             let cachedMembers = await ApplicationCache.getChatMembers(chat_id, false);
 
@@ -529,7 +543,7 @@ class ChatsModel {
               and is_kicked = $2
         `
 
-        const result = await pool.query(query, [chat_id, false], from_master);
+        const result = await (from_client ? from_client : pool).query(query, [chat_id, false], from_master);
 
         if (result.rows.length > 0 && cache_on) {
             await ApplicationCache.trySetChatMembers(chat_id, result.rows.map(v => ChatMemberCacheDTO(v)));
